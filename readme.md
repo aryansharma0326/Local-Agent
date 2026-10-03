@@ -311,6 +311,33 @@ prompt ─▶ Harness ──(system prompt + tool schemas + workspace listing + 
   - Parent directories are resolved through symlinks and must stay inside the workspace.
   - The agent never writes through a symlink, never deletes a directory, and never deletes more than one file.
 
+## Latest test results
+**Environment:** macOS 27.0 (Apple silicon), Python 3.13.2. The live tests used the endpoint `https://llm.montii.me/v1` with `Qwen/Qwen3-14B`.
+
+### Offline (run 2026-10-02 with `bash tests/run_offline.sh`)
+| Suite | Kind | Checkpoint | Result |
+|---|---|---|---|
+| `tests/test_sandbox.py` | unit | 1 | 53 / 53 passed |
+| `tests/test_verify.py` | unit | 1 + 2 | 24 / 24 passed |
+| `tests/test_csv.py` | unit | 2 | 61 / 61 passed |
+| `tests/test_offline.py` | end-to-end, mock model | 1 | 56 / 56 passed |
+| `tests/test_edge_cases.py` | end-to-end, mock model | 1 | 107 / 107 passed |
+| `tests/test_sessions.py` | end-to-end, mock model | 2 | 62 / 62 passed |
+| **Offline total** | | | **363 / 363 passed** (`ALL OFFLINE SUITES PASSED`) |
+
+### Live (run on the author's machine with `python3 tests/test_live.py`)
+| Part | Result | Agent runs | Median per run | Mean per run | Slowest run |
+|---|---|---|---|---|---|
+| Checkpoint 1: single requests | **66 / 66 passed** | 66 | 3.4 s | 9.1 s | 72.3 s (`edge_create_long_line`) |
+| Checkpoint 2: multi-turn conversations | **25 / 25 passed** (58 turns) | 58 | 3.4 s | 4.3 s | 32.3 s (`cp2_row_sum_then_other_row`, turn 3) |
+| **Live total** | **91 / 91 passed** | 124 | 3.4 s | 6.9 s | 72.3 s |
+
+- Every run finished well under the 180 s limit. Each produced a single valid JSON object and the correct exit code.
+- **Slowest runs:**
+  - The 72.3 s run is the deliberately repetitive long-content case: the model loops while copying the text, and the harness completes the write from the request.
+  - Question answering runs with reasoning enabled, so those runs take about 6-15 s, and up to 53 s for the prompt-injection case.
+  - The Checkpoint 2 CSV turns, computed by the deterministic CSV tools, take about 3-5 s.
+
 ## Tests
 There are two kinds of tests:
 - **Offline tests** need no API key and no internet. The unit tests call the agent's modules directly. The end-to-end tests run the real `run_agent.sh` against a small mock model server on `127.0.0.1` that replays scripted tool calls, so harness behaviour (guards, sandbox, verification, sessions, CSV engine, error handling) is tested exactly and repeatably.
