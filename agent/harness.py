@@ -18,7 +18,7 @@ from errors import AgentError
 from llm import log, remaining
 from tools import TOOL_ALIASES, build_tools
 
-MAX_STEPS = 12
+MAX_STEPS = 16
 MAX_CONSECUTIVE_INVALID = 3
 MAX_SAME_FAILURE = 3  # the identical failing call this many times -> stop
 _ASKS_USER = re.compile(r"\b(could you|can you|would you|do you want|please (clarify|confirm|specify|provide)|"
@@ -30,7 +30,11 @@ _EDIT_VERBS = re.compile(r"\b(update|change|set|replace|modify|edit|remove|delet
                          r"apply|write|put|make|switch|reset|clear|fill|adjust|revise|strip)\w*\b", re.I)
 _CALC = re.compile(r"\b(total|sum|average|mean|avg|add(ed|ing)?( up)?)\b", re.I)
 MAX_REPLY_TOKENS = 1800  # ~70 s at the endpoint's ~25 tokens/s
-THINK_TOKENS = 1800      # reasoning + answer; if cut off, the turn is retried without thinking
+# A request that refers back to something ("it", "the average", "that file")
+# but names no file: without session history there is nothing to refer to.
+_FOLLOWUP = re.compile(r"\b(it|its|that|this|those|these|them|again|instead|as well|too|the (?:same|previous|last|"
+                       r"above|earlier|table|file|column|result|answer|average|mean|total|sum|median|value|number|"
+                       r"copy|data|rows?|one))\b|\b(?:average|mean|total|sum|median|maximum|minimum)\b", re.I)
 LONG_PROMPT = 500        # characters; longer requests get the long-content hint up front
 LONG_CONTENT_HINT = ("If the file content is long or repetitive, do not retype it: call write_file with "
                      "content_start (its first few words) and content_end (its last few words), copied verbatim "
@@ -88,10 +92,10 @@ Observation: RESULT: average of qty in stock.csv over 3 value(s) = 14
 
 
 class Harness:
-    def __init__(self, prompt, llm, sandbox, history=None):
+    def __init__(self, prompt, llm, sandbox, history=None, context=None):
         self.prompt = prompt
         self.history = history or []          # earlier turns of this session
-        self.history_text = session.render(self.history)
+        self.history_text = session.render(self.history, context)
         self.context = prompt + "\n" + self.history_text  # where file names may legitimately come from
         self.actions = []                     # what this turn did, for the session record
         self.computed = []                    # (value, sentence) results computed by CSV tools
@@ -101,7 +105,8 @@ class Harness:
         self.sandbox = sandbox
         self.tools = build_tools(sandbox)
         self.read_paths = set()      # files successfully read this run
-        self.mutation = None         # ("write"|"delete", relpath): the one file changed this turn
+        self.mutation = None         # ("write"|"delete", relpath): the latest file changed this turn
+        self.mutations = []          # every change: {"kind", "rel", "real", "expected", "tool"}
         self.delete_names = set()    # basenames the model tried to delete
         self.write_rejections = 0
         self.finish_rejections = 0
@@ -132,16 +137,7 @@ class Harness:
                 % (past, listing, self.prompt, hint))
 
     def _ask_model(self, messages):
-        # Reasoning helps once file contents are in context (answering, counting,
-        # summarizing); tool selection itself is fast without it.
-        if self.content_read and self.mutation is None and remaining() > 70:
-            try:
-                reply = self.llm.chat(messages, max_tokens=THINK_TOKENS, thinking=True, call_cap=80)
-                if guards.extract_json(reply) is not None:
-                    return reply
-                log("thinking turn gave no JSON; retrying without thinking")
-            except AgentError as e:
-                log("thinking turn failed (%s); retrying without thinking" % e)
+        # Thinking mode is never used (CP3 rule: enable_thinking=false on every request).
         # Qwen3-14B on the shared endpoint decodes ~25 tokens/s: keep every call short enough
         # that a runaway (looping) generation ends well inside the time budget.
         need = 1200 + len(self.prompt) // 3 + self.read_chars // 3
@@ -151,6 +147,10 @@ class Harness:
     def run(self):
         """Run the loop, then independently verify the result on disk.
         Returns (status, message)."""
+        if self._no_referent():
+            log("follow-up without any earlier turn in this session; asking for clarification")
+            return "error", ("This request refers to something from an earlier turn, but this conversation has "
+                             "no earlier turns. Please say which file (and column, if relevant) you mean.")
         status, message = self._loop()
         if status == "success":
             problems = self._verify()
@@ -161,22 +161,39 @@ class Harness:
                                           "no files were changed"))
         return status, message
 
+    def _no_referent(self):
+        """SS-9: a follow-up ("What is the average?", "Delete it.") with no earlier
+        turn in this session and no file named must not be answered by guessing
+        a plausible file from the workspace."""
+        if self.history or not _FOLLOWUP.search(self.prompt) or session._STANDING.search(self.prompt):
+            return False
+        if guards.prompt_paths(self.prompt):
+            return False
+        low = guards.nfc(self.prompt).lower()
+        for p in self.sandbox.listing(limit=2000):
+            base = p.rsplit("/", 1)[-1].lower()
+            stem = base.rsplit(".", 1)[0] if "." in base[1:] else base
+            if len(stem) >= 3 and re.search(r"(?<![\w])" + re.escape(stem) + r"(?![\w])", low):
+                return False
+        # Only questions/edits that need data: a pure creation request names its file.
+        return bool(re.search(r"\b(average|mean|total|sum|median|max(?:imum)?|min(?:imum)?|count|delete|remove|"
+                              r"copy|save|multiply|divide|add|subtract|double|half|what|how|which|who|show|"
+                              r"tell|read|open|update|change|rename)\b", self.prompt, re.I))
+
     def _verify(self):
         """Inspect the disk directly; never trust a tool's or the model's word."""
-        problems, expect = [], None
-        if self.mutation is not None:
-            kind, rel = self.mutation
-            full = os.path.join(self.sandbox.root, self.mutation_real)
-            if kind == "write":
-                expect = "present"
-                p = verify.check_write(full, rel, self.expected_content)
+        problems, changes = [], {}
+        for m in self.mutations:
+            full = os.path.join(self.sandbox.root, m["real"])
+            if m["kind"] == "write":
+                changes[m["real"]] = "present"
+                p = verify.check_write(full, m["rel"], m["expected"])
             else:
-                expect = "absent"
-                p = verify.check_delete(full, rel)
+                changes[m["real"]] = "absent"
+                p = verify.check_delete(full, m["rel"])
             if p:
                 problems.append(p)
-        problems += verify.check_workspace(self.sandbox.root, self.before, self.before_complete,
-                                           self.mutation_real, expect)
+        problems += verify.check_workspace(self.sandbox.root, self.before, self.before_complete, changes)
         return problems
 
     def _loop(self):
@@ -192,7 +209,7 @@ class Harness:
             except AgentError as e:
                 # A runaway generation (e.g. copying long, repetitive content) timed out.
                 # Recover once by asking for a reference to the content instead.
-                if "timeout" not in str(e) or self.timeouts or remaining() < 25:
+                if ("timed out" not in str(e) and "timeout" not in str(e)) or self.timeouts or remaining() < 25:
                     raise
                 self.timeouts += 1
                 self._observe(messages, "harness", "ERROR: your reply took too long. " + LONG_CONTENT_HINT)
@@ -262,7 +279,12 @@ class Harness:
         log("observation (%s): %s" % (name, text[:300].replace("\n", " | ")))
         hint = ""
         if self.mutation is not None:
-            hint = "\nThe file operation is done. Call finish unless the same file needs another change."
+            pend = self._pending_output()
+            if pend:
+                hint = "\nThat operation is done. The request also asks for %s; do that next." % pend
+            else:
+                hint = ("\nThe file operation is done. If the request explicitly asks for another file "
+                        "operation, do it now; otherwise call finish.")
         messages.append({"role": "user", "content": "Observation from %s:\n%s%s\n\nNext tool call "
                                                     "(one JSON object):" % (name, text, hint)})
 
@@ -295,6 +317,9 @@ class Harness:
             self.mutation_tool = name
             self.mutation_real = os.path.relpath(full, self.sandbox.root).replace(os.sep, "/")
             self.expected_content = res.wrote[1] if res.wrote is not None else None
+            self.mutations = [m for m in self.mutations if m["real"] != self.mutation_real]
+            self.mutations.append({"kind": self.mutation[0], "rel": self.mutation[1], "real": self.mutation_real,
+                                   "expected": self.expected_content, "tool": name})
         if res.computed:
             self.computed.append(res.computed)
         self.last_error = None
@@ -309,7 +334,8 @@ class Harness:
             result = "read %d characters" % len(obs)
         else:
             result = obs if len(obs) <= 400 else obs[:400] + " [...]"
-        self.actions.append({"call": "%s %s" % (name, json.dumps(shown, ensure_ascii=False)), "result": result})
+        self.actions.append({"call": "%s %s" % (name, json.dumps(shown, ensure_ascii=False)), "result": result,
+                             "tool": name, "args": shown})
 
     # ------------------------------------------------------------ guardrails
     def _guard(self, name, args):
@@ -339,17 +365,26 @@ class Harness:
         return None
 
     def _one_change(self, kind, path):
-        """One file may be changed per turn; further writes to that same file are fine."""
+        """After the first change, another change is allowed only for a file the
+        request itself names (compound requests: "create a.txt ... and delete
+        b.txt"). Further writes to a file already written are fine."""
         if self.mutation is None:
             return None
         try:
-            same = self.sandbox.normalize(path) == self.mutation[1]
+            rel = self.sandbox.normalize(path)
         except AgentError:
-            same = False
-        if same and kind == "write" and self.mutation[0] == "write":
-            return None
-        return ("the requested file operation was already completed (%s %s); only one change is "
-                "allowed per task. Call finish." % (self.mutation_tool, self.mutation[1]))
+            rel = None
+        if rel is not None:
+            done = [m for m in self.mutations if m["rel"] == rel]
+            if kind == "write" and any(m["kind"] == "write" for m in done):
+                return None
+            if (not done and len(guards.prompt_paths(self.prompt)) >= 2
+                    and guards.exact_name_mentioned(rel, self.prompt)
+                    and not (kind == "write" and rel in self.read_paths)
+                    and not guards.conflicting_prompt_path(rel, self.prompt)):
+                return None
+        return ("the requested file operation was already completed (%s %s), and %s is not another file "
+                "the request asks you to change. Call finish." % (self.mutation_tool, self.mutation[1], path))
 
     def _target_allowed(self, path, rel, in_place, may_invent_name=True):
         """Is `path` a file this request may create or overwrite?"""
@@ -463,6 +498,9 @@ class Harness:
                             % (n, self.word_limit, int(self.word_limit * 0.75)))
                 log("trimming summary from %d to %d words" % (n, self.word_limit))
                 content = guards.trim_to_words(content, self.word_limit)
+        problem = self._summary_shape(content, rel)
+        if problem:
+            return problem
         if self.char_limit and len(content) > self.char_limit:
             self.write_rejections += 1
             if self.write_rejections <= 2:
@@ -471,6 +509,42 @@ class Harness:
             log("trimming summary from %d to %d characters" % (len(content), self.char_limit))
             content = guards.trim_to_chars(content, self.char_limit)
         args["content"] = content
+        return None
+
+    def _summary_shape(self, content, rel):
+        """SM-2/SM-6: requested bullet/sentence counts and numbers that do not
+        come from the sources. Feedback to the model (bounded), never a hard stop."""
+        if rel.lower().endswith((".csv", ".tsv", ".json")) or self.write_rejections >= 2:
+            return None
+        bullets = guards.parse_bullet_count(self.prompt)
+        if bullets and guards.count_bullets(content) != bullets:
+            self.write_rejections += 1
+            return ("the request asks for exactly %d bullet points but the content has %d. Write exactly %d lines "
+                    "starting with '- ' and nothing else, then call write_file again"
+                    % (bullets, guards.count_bullets(content), bullets))
+        sentences = guards.parse_sentence_count(self.prompt)
+        if sentences and not bullets and guards.count_sentences(content) != sentences:
+            self.write_rejections += 1
+            return ("the request asks for %d sentence(s) but the content has %d. Rewrite it as exactly %d "
+                    "sentence(s) and call write_file again" % (sentences, guards.count_sentences(content), sentences))
+        smax = guards.parse_sentence_max(self.prompt)
+        if smax and guards.count_sentences(content) > smax:
+            self.write_rejections += 1
+            return ("the request allows at most %d sentence(s) but the content has %d; shorten it and call "
+                    "write_file again" % (smax, guards.count_sentences(content)))
+        if not getattr(self, "_numbers_checked", False) and self.read_paths:
+            self._numbers_checked = True
+            src = []
+            for p in self.read_paths:
+                try:
+                    src.append(self.sandbox.read_file(p)[1])
+                except (AgentError, OSError):
+                    pass
+            bad = guards.unsupported_numbers(content, "\n".join(src))
+            if bad:
+                self.write_rejections += 1
+                return ("these numbers/times/dates in the summary do not appear in the source files: %s. Use only "
+                        "facts from the sources (copy numbers exactly), then call write_file again" % ", ".join(bad[:8]))
         return None
 
     def _exact_source_text(self, content):
@@ -532,11 +606,12 @@ class Harness:
             return "done", "error", message or self.last_error or "The task could not be completed."
 
         problem = None
-        pending = self._pending_output() if self.mutation is None else None
+        pending = self._pending_output()
         if self.mutation is None and _ASKS_USER.search(message):
             problem = ("nobody can answer questions; do not ask the user anything. Use the tools to "
                        "complete the task, then finish with the result")
-        elif self.mutation is None and not self.read_paths and not self.history:
+        elif (self.mutation is None and not self.read_paths and not self.history
+              and not session._STANDING.search(self.prompt)):
             problem = ("you reported success but no operation was performed. Call the needed tool, or "
                        "finish with status \"error\" if the task cannot be done")
         elif pending:
@@ -552,7 +627,8 @@ class Harness:
         self.finish_rejections += 1
         if self.finish_rejections <= 1:
             return "retry", problem, None
-        if self.mutation is None and not self.read_paths and not self.history:
+        if (self.mutation is None and not self.read_paths and not self.history
+                and not session._STANDING.search(self.prompt)):
             return "done", "error", self.last_error or "The task could not be completed."
         if not message:
             return "done", "error", "The model did not provide an answer."
@@ -578,10 +654,15 @@ class Harness:
         if not _CREATE_VERBS.search(self.prompt):
             return None
         read_names = set(p.rsplit("/", 1)[-1] for p in self.read_paths)
+        written = [m["expected"] for m in self.mutations if isinstance(m.get("expected"), str)]
         for tok in guards.prompt_paths(self.prompt):
             base = tok.rsplit("/", 1)[-1]
             if not re.search(r"[A-Za-z]\w*\.[A-Za-z][A-Za-z0-9]{0,9}$", base) or base in read_names:
                 continue
+            if any(base in w for w in written):
+                continue  # a file name that is part of content already written
+            if any(m["rel"].rsplit("/", 1)[-1].endswith(base) for m in self.mutations):
+                continue  # already produced (possibly under the directory the request named)
             try:
                 rel = self.sandbox.normalize(tok)
             except AgentError:
@@ -593,7 +674,11 @@ class Harness:
     def _default_message(self):
         if self.mutation is None:
             return "Done."
-        if self.mutation[0] == "delete":
-            return "Deleted %s." % self.mutation[1]
-        return "%s %s." % ("Created" if self.mutation_tool == "write_file" else "Saved", self.mutation[1])
+        parts = []
+        for m in self.mutations:
+            if m["kind"] == "delete":
+                parts.append("Deleted %s." % m["rel"])
+            else:
+                parts.append("%s %s." % ("Created" if m["tool"] == "write_file" else "Saved", m["rel"]))
+        return " ".join(parts)
 

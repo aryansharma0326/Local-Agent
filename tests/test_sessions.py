@@ -117,8 +117,11 @@ def t_same_id_in_another_workspace_is_separate():
     ws1, ws2 = Workspace({"sales.csv": SALES}), Workspace({"sales.csv": SALES})
     turn(ws1, "Read sales.csv and tell me the total of the revenue column.", 1001,
          [call("csv_aggregate", path="sales.csv", column="revenue", operation="sum"), ok("300")])
-    turn(ws2, "What is the average?", 1001, [fail("No earlier context.")])
-    expect("Conversation so far" not in first_message(), "history leaked across workspaces")
+    r = turn(ws2, "What is the average?", 1001, [fail("No earlier context.")])
+    # D-6: a reused id in a fresh workspace is a new conversation; SS-9: with nothing to
+    # refer to, the agent asks for clarification instead of guessing (no model call needed).
+    expect(r.status == "error" and "earlier turn" in r.message, r.stdout)
+    expect(not SERVER.requests, "the model was asked to guess without context")
 
 
 def t_no_session_id_is_stateless():
@@ -177,10 +180,14 @@ def t_earlier_instruction_and_value_are_available():
 # ======================================================================
 # Argument handling
 # ======================================================================
-def t_non_numeric_second_argument_is_not_a_session():
+def t_non_numeric_second_argument_is_a_hashed_session():
+    # argv[2] is always the session id (CLI-2); non-digit ids are hashed (SS-3).
     ws = Workspace({})
-    turn(ws, "Create a.txt containing", "hello", [call("write_file", path="a.txt", content="hello"), ok()])
-    expect("Create a.txt containing hello" in first_message(), "arguments were not joined into the prompt")
+    turn(ws, "Create a.txt containing hello", "abc", [call("write_file", path="a.txt", content="hello"), ok()])
+    expect("Create a.txt containing hello" in first_message() and "abc" not in first_message().split("Request:")[-1],
+           "session id leaked into the prompt")
+    turn(ws, "Delete it.", "abc", [call("delete_file", path="a.txt"), ok()])
+    expect("Conversation so far" in first_message() and not ws.exists("a.txt"), "named session lost its history")
 
 
 def t_session_id_with_whitespace_and_leading_zeros():
@@ -190,8 +197,8 @@ def t_session_id_with_whitespace_and_leading_zeros():
     turn(ws, "What is the average?", "0042",
          [call("csv_aggregate", path="sales.csv", column="revenue", operation="average"), ok("150")])
     expect("Conversation so far" in first_message(), "whitespace around the id broke the session")
-    turn(ws, "What is the average?", "42", [fail("no context")])
-    expect("Conversation so far" not in first_message(), "'42' and '0042' must be different sessions")
+    r = turn(ws, "What is the average?", "42", [fail("no context")])
+    expect(r.status == "error" and not SERVER.requests, "'42' and '0042' must be different sessions")
 
 
 def t_missing_prompt_with_session_id():
@@ -589,14 +596,15 @@ def t_corrupt_session_store_does_not_break_the_turn():
          [call("csv_aggregate", path="sales.csv", column="revenue", operation="sum"), ok("300")])
     store = os.environ.get("AGENT_SESSION_DIR") or __import__("common").SESSION_DIR
     for f in os.listdir(store):
-        if f.endswith("_4.json"):
+        if f == "session_4.json":
             with open(os.path.join(store, f), "w") as fh:
                 fh.write("{broken")
-    r = turn(ws, "What is the average?", 4,
+    r = turn(ws, "What is the average of the revenue column in sales.csv?", 4,
              [call("csv_aggregate", path="sales.csv", column="revenue", operation="average"), ok("150")])
     expect(r.status == "success" and "Conversation so far" not in first_message(), r.stdout)
+    expect(any(f.startswith("session_4.json.corrupt-") for f in os.listdir(store)), "corrupt file not set aside")
     turn(ws, "And the total?", 4, [call("csv_aggregate", path="sales.csv", column="revenue", operation="sum"), ok("300")])
-    expect("What is the average?" in first_message(), "history did not recover after the corrupt file")
+    expect("What is the average" in first_message(), "history did not recover after the corrupt file")
 
 
 def t_unwritable_session_dir_falls_back():
@@ -611,30 +619,31 @@ def t_unwritable_session_dir_falls_back():
              [call("csv_aggregate", path="sales.csv", column="revenue", operation="average"), ok("150")], env=env)
         expect("Read sales.csv and tell me the total" in first_message(), "history lost with an unwritable store")
     finally:
-        name = session_mod._file_name(ws.dir, "123456789")
-        for d in session_mod._candidates(ws.dir):
+        name = "session_%s.json" % session_mod.session_key("123456789")
+        for d in session_mod._candidates():
             try:
                 os.unlink(os.path.join(d, name))
             except OSError:
                 pass
 
 
-def t_history_keeps_only_the_last_30_turns():
+def t_history_keeps_only_the_last_40_turns():
     ws = Workspace({"sales.csv": SALES})
-    for i in range(32):
+    for i in range(42):
         turn(ws, "Question #%02d: total revenue in sales.csv?" % i, 77,
              [call("csv_aggregate", path="sales.csv", column="revenue", operation="sum"), ok("300")])
     sent = first_message()
-    expect("Question #00" not in sent and "Question #01" in sent and "Question #30" in sent, "wrong history window")
-    expect(sent.count("[Turn ") == 30, "history has %d turns" % sent.count("[Turn "))
+    expect("Question #00" not in sent and "Question #01" in sent and "Question #40" in sent, "wrong history window")
+    expect(sent.count("[Turn ") == 40, "history has %d turns" % sent.count("[Turn "))
+    expect(sent.count("  Action: ") == 8, "only the most recent turns should be verbatim")
 
 
 def t_session_ids_zero_and_leading_zero_differ():
     ws = Workspace({"sales.csv": SALES})
     turn(ws, "Read sales.csv and tell me the total of the revenue column.", "0",
          [call("csv_aggregate", path="sales.csv", column="revenue", operation="sum"), ok("300")])
-    turn(ws, "What is the average?", "00", [fail("no context")])
-    expect("Conversation so far" not in first_message(), "'0' and '00' shared history")
+    r = turn(ws, "What is the average?", "00", [fail("no context")])
+    expect(r.status == "error" and not SERVER.requests, "'0' and '00' shared history")
     turn(ws, "What is the average?", "0",
          [call("csv_aggregate", path="sales.csv", column="revenue", operation="average"), ok("150")])
     expect("Conversation so far" in first_message(), "session 0 lost its history")

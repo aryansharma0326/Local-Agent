@@ -81,7 +81,8 @@ def parse_tool_call(text):
 
 
 # ------------------------------------------------------------------- paths
-_PATH_TOKEN = re.compile(r"[\w\-./\\]*\w\.[A-Za-z0-9]{1,10}\b|[\w\-]+(?:/[\w\-.]+)+")
+_PATH_TOKEN = re.compile(r"[\w\-./\\]{0,200}\w\.[A-Za-z0-9]{1,10}\b|[\w\-]{1,100}(?:/[\w\-.]{1,100}){1,20}")
+_PATHS_CACHE = {}
 
 
 def nfc(s):
@@ -96,7 +97,18 @@ def norm_path(p):
 
 
 def prompt_paths(prompt):
-    """Path-like tokens mentioned in the request."""
+    """Path-like tokens mentioned in the request (memoized: called often)."""
+    hit = _PATHS_CACHE.get(prompt)
+    if hit is not None:
+        return list(hit)
+    out = _prompt_paths(prompt)
+    if len(_PATHS_CACHE) > 64:
+        _PATHS_CACHE.clear()
+    _PATHS_CACHE[prompt] = tuple(out)
+    return list(out)
+
+
+def _prompt_paths(prompt):
     out = []
     for m in _PATH_TOKEN.finditer(nfc(prompt)):
         tok = norm_path(m.group(0)).rstrip(".")
@@ -313,6 +325,7 @@ def _limit_rules(unit):
         (_NUM + u + r"\s+(?:or\s+(?:less|fewer)|at\s+most|max(?:imum)?|limit)", 0),
         (_NUM + r"-" + unit.rstrip("s?").rstrip("(") + r"\b", 0),
         (r"\bin\s+" + _NUM + u, 0),
+        (r"\b(?:about|around|approximately|roughly|~)\s*" + _NUM + u, 0),
         (unit.rstrip("s?").rstrip("(") + r"\s+(?:limit|count)\s+(?:of|is)\s+" + _NUM, 0),
         (unit.rstrip("s?").rstrip("(") + r"\s+count\s+" + _UNDER + r"\s*" + _NUM, -1),
     ]
@@ -398,3 +411,89 @@ def clean_generated(text):
     if m:
         text = m.group(1).strip()
     return text
+
+
+# ------------------------------------------- sentence / bullet constraints
+_COUNT_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+                "nine": 9, "ten": 10, "a single": 1, "single": 1}
+_CNT = r"(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|a single|single)"
+
+
+def _cnt(s):
+    s = s.lower()
+    return int(s) if s.isdigit() else _COUNT_WORDS[s]
+
+
+def parse_bullet_count(text):
+    """'exactly 3 bullet points' / 'in three bullets' / '5 bullet points' -> 3/3/5, else None."""
+    m = re.search(r"\b(?:exactly\s+|in\s+|as\s+|with\s+|of\s+|using\s+)?" + _CNT + r"\s+(?:short\s+|concise\s+)?"
+                  r"(?:bullet(?:ed)?(?:\s+points?)?|bullets|points)\b", nfc(text or ""), re.I)
+    return _cnt(m.group(1)) if m else None
+
+
+def parse_sentence_count(text):
+    """'in 2 sentences' / 'exactly three sentences' / 'one sentence' -> n, else None.
+    'at most N sentences' is a maximum and is handled by parse_sentence_max."""
+    t = nfc(text or "")
+    if re.search(r"\b(?:at most|no more than|up to|maximum of|fewer than|less than|under)\s+" + _CNT +
+                 r"\s+sentences?\b", t, re.I):
+        return None
+    m = re.search(r"\b" + _CNT + r"(?:-|\s+)sentences?\b", t, re.I)
+    return _cnt(m.group(1)) if m else None
+
+
+def parse_sentence_max(text):
+    m = re.search(r"\b(at most|no more than|up to|maximum of|fewer than|less than|under)\s+" + _CNT +
+                  r"\s+sentences?\b", nfc(text or ""), re.I)
+    if not m:
+        return None
+    n = _cnt(m.group(2))
+    return n - 1 if m.group(1).lower() in ("fewer than", "less than", "under") else n
+
+
+_BULLET_LINE = re.compile(r"^\s*(?:[-*\u2022]|\d{1,2}[.)])\s+\S")
+
+
+def count_bullets(text):
+    return sum(1 for l in (text or "").split("\n") if _BULLET_LINE.match(l))
+
+
+def count_sentences(text):
+    t = re.sub(r"\b(?:e\.g|i\.e|etc|vs|approx|Mr|Mrs|Ms|Dr|No)\.", "_", text or "", flags=re.I)
+    t = re.sub(r"(\d)\.(\d)", r"\1_\2", t)
+    parts = [p for p in re.split(r"(?<=[.!?])\s+|\n\s*\n", t.strip()) if re.search(r"\w", p)]
+    return len(parts)
+
+
+_NUM_TOKEN = re.compile(r"\d[\d,]*(?:[.:]\d+)*")
+
+
+def _norm_num(tok):
+    tok = tok.replace(",", "")
+    parts = re.split(r"([.:])", tok)
+    out = []
+    for p in parts:
+        if p in (".", ":"):
+            out.append(p)
+        else:
+            out.append(p.lstrip("0") or "0")
+    s = "".join(out)
+    if "." in s and ":" not in s:
+        s = s.rstrip("0").rstrip(".") if re.fullmatch(r"\d+\.\d+", s) else s
+    return s
+
+
+def unsupported_numbers(summary, sources):
+    """Numbers/times/dates in the summary that never occur in the sources
+    (after normalising leading zeros and thousands separators)."""
+    have = set()
+    for tok in _NUM_TOKEN.findall(sources or ""):
+        have.add(_norm_num(tok))
+        for piece in re.split(r"[.:]", tok.replace(",", "")):
+            have.add(piece.lstrip("0") or "0")
+    bad = []
+    for tok in _NUM_TOKEN.findall(summary or ""):
+        n = _norm_num(tok)
+        if n not in have and tok not in bad:
+            bad.append(tok)
+    return bad

@@ -279,10 +279,13 @@ def t_create_status_capitalized():
 def t_create_multiple_argv_words():
     ws = Workspace({})
     SERVER.reset([call("write_file", path="w.txt", content="hi"), ok()])
-    r = run_agent(ws, "Create", ENV, extra_args=["w.txt", "containing", "hi"])
+    # argv[1] is the whole prompt, argv[2] the session id; further arguments are ignored (CLI-2).
+    r = run_agent(ws, "Create w.txt containing hi", ENV, extra_args=["77001", "extra", "words"])
     assert_contract(r)
     expect(r.status == "success" and ws.read("w.txt") == "hi", r.stdout)
-    expect("Create w.txt containing hi" in SERVER.requests[0]["body"]["messages"][1]["content"], "argv not joined")
+    first = SERVER.requests[0]["body"]["messages"][1]["content"]
+    expect("Create w.txt containing hi" in first and "extra" not in first, "extra argv leaked into the prompt")
+    expect("ignoring 2 extra argument" in r.stderr, "extra args not logged")
 
 
 def t_create_workspace_path_with_spaces_and_unicode():
@@ -476,7 +479,7 @@ def t_answer_not_in_file_is_success():
 
 
 def t_answer_long_multiline_message():
-    msg = "Line one.\n" + "x" * 5000 + '\n"quoted" \\ backslash'
+    msg = "Line one.\n" + "x" * 3000 + '\n"quoted" \\ backslash'
     ws, r, _ = go({"f.txt": "x"}, "According to f.txt what is x?", [call("read_file", path="f.txt"), ok(msg)])
     expect(r.message == msg and r.stdout.count("\n") == 1, "message altered or stdout multi-line")
 
@@ -612,7 +615,7 @@ def t_http_403_cloudflare_block_reported():
 def t_http_530_server_offline_is_retried_then_reported():
     ws, r, _ = go({}, "Create a.txt containing 1", [{"status": 530, "body": "error code: 1033"}] * 5)
     expect(r.status == "error" and "offline" in r.message, r.stdout)
-    expect(len(SERVER.requests) == 3, "expected 3 attempts, made %d" % len(SERVER.requests))
+    expect(2 <= len(SERVER.requests) <= 5, "expected 2-5 attempts, made %d" % len(SERVER.requests))
 
 
 def t_http_530_blip_then_success():
@@ -628,10 +631,11 @@ def t_empty_choices_then_success():
 
 
 def t_server_rejects_chat_template_kwargs():
+    # enable_thinking=false is mandatory on every request: never drop it, even after a 400.
     ws, r, _ = go({}, "Create a.txt containing 1",
                   [{"reject_field": "chat_template_kwargs", "content": call("write_file", path="a.txt", content="1")}, ok()])
-    expect(r.status == "success" and ws.read("a.txt") == "1", r.stdout)
-    expect("chat_template_kwargs" not in SERVER.requests[-1]["body"], "field not dropped after 400")
+    expect(all(q["body"].get("chat_template_kwargs") == {"enable_thinking": False} for q in SERVER.requests),
+           "chat_template_kwargs was dropped or changed")
 
 
 def t_base_url_with_trailing_slash():

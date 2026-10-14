@@ -178,7 +178,7 @@ class SandboxTests(unittest.TestCase):
 
     def test_read_encodings(self):
         cases = [(b"\xef\xbb\xbfBOM text", "BOM text"), ("Zoë".encode("utf-16"), "Zoë"),
-                 ("Caf\xe9".encode("latin-1"), "Caf\ufffd"), (b"", "")]
+                 ("Caf\xe9".encode("latin-1"), "Caf\xe9"), (b"", "")]
         for data, want in cases:
             with open(self.p("e.txt"), "wb") as f:
                 f.write(data)
@@ -442,7 +442,8 @@ class LLMHelperTests(unittest.TestCase):
         self.assertEqual(llm.strip_think(None), "")
 
     def test_url_building_and_env(self):
-        saved = {k: os.environ.get(k) for k in ("OPENAI_BASE_URL", "MODEL", "QWEN_API_KEY")}
+        saved = {k: os.environ.get(k) for k in ("OPENAI_BASE_URL", "MODEL", "QWEN_API_KEY", "OPENAI_API_KEY")}
+        os.environ.pop("OPENAI_API_KEY", None)
         try:
             os.environ.update(MODEL="m", QWEN_API_KEY="k")
             for base, want in (("https://h/v1", "https://h/v1/chat/completions"),
@@ -461,7 +462,9 @@ class LLMHelperTests(unittest.TestCase):
                     os.environ[k] = v
 
     def test_budget_never_above_default(self):
-        self.assertLessEqual(llm.TOTAL_BUDGET, 170.0)
+        import config
+        self.assertLessEqual(config.BUDGET_SIMPLE + config.WATCHDOG_SLACK, 175.0)
+        self.assertLessEqual(config.BUDGET_DEEP + config.WATCHDOG_SLACK, 295.0)
 
 
 

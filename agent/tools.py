@@ -164,7 +164,7 @@ def build_tools(sandbox):
         if set("*?[]") & set(args["path"]):
             raise AgentError("wildcards are not allowed; delete_file removes exactly one named file")
         rel = sandbox.delete_file(args["path"])
-        return ToolResult("OK: deleted %s." % rel, deleted=args["path"])
+        return ToolResult("OK: deleted %s." % rel, deleted=rel)
 
     def copy_file(args):
         src_rel, data = sandbox.read_bytes(args["source_path"])

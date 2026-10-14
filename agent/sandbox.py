@@ -156,6 +156,14 @@ class Sandbox:
 
     def delete_file(self, raw):
         rel, full = self.resolve(raw)
+        if not os.path.lexists(full):
+            # "Delete only.txt" when the only file of that name is sub/only.txt.
+            base = os.path.basename(rel)
+            matches = self.files_named(base) if "/" not in rel else []
+            if len(matches) > 1:
+                raise AgentError("%s is ambiguous: %s. Nothing was deleted." % (base, ", ".join(matches[:5])))
+            if len(matches) == 1:
+                rel, full = self.resolve(matches[0])
         try:
             st = os.lstat(full)
         except FileNotFoundError:
@@ -233,4 +241,12 @@ def decode_text(data, rel):
             pass
     if b"\x00" in data[:8192]:
         raise AgentError("Cannot read %s: it appears to be a binary file, not text." % rel)
-    return data.decode("utf-8", errors="replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    # Not UTF-8: legacy single-byte text (cp1252 / latin-1) keeps accented names intact.
+    try:
+        return data.decode("cp1252")
+    except UnicodeDecodeError:
+        return data.decode("latin-1")

@@ -301,136 +301,18 @@ class CsvTools(unittest.TestCase):
             v({"path": "a", "id_value": [1], "column": "c", "new_value": "x"})
 
 
-class Sessions(unittest.TestCase):
-    def setUp(self):
-        self.store = os.path.realpath(tempfile.mkdtemp())
-        self.ws1 = os.path.realpath(tempfile.mkdtemp())
-        self.ws2 = os.path.realpath(tempfile.mkdtemp())
-        self.saved = os.environ.get("AGENT_SESSION_DIR")
-        os.environ["AGENT_SESSION_DIR"] = self.store
-
-    def tearDown(self):
-        if self.saved is None:
-            os.environ.pop("AGENT_SESSION_DIR", None)
-        else:
-            os.environ["AGENT_SESSION_DIR"] = self.saved
-        for d in (self.store, self.ws1, self.ws2):
-            shutil.rmtree(d, ignore_errors=True)
-
-    def turn(self, text):
-        return session.make_turn(text, [{"call": "read_file {}", "result": "read 5 characters"}], "success", "ok " + text)
-
-    def test_valid_session_id(self):
-        for good in ("1001", "0", " 42 ", "9" * 30):
-            self.assertTrue(session.valid_session_id(good), good)
-        for bad in ("", "abc", "12a", "1 2", "-5", "1.5", None, "../1", "1/2"):
-            self.assertFalse(session.valid_session_id(bad), repr(bad))
-
-    def test_round_trip(self):
-        self.assertEqual(session.load(self.ws1, "1001"), [])
-        self.assertTrue(session.save(self.ws1, "1001", [self.turn("a"), self.turn("b")]))
-        turns = session.load(self.ws1, "1001")
-        self.assertEqual([t["prompt"] for t in turns], ["a", "b"])
-        self.assertEqual(turns[0]["message"], "ok a")
-
-    def test_sessions_and_workspaces_are_separate(self):
-        session.save(self.ws1, "1001", [self.turn("one")])
-        session.save(self.ws1, "1002", [self.turn("two")])
-        session.save(self.ws2, "1001", [self.turn("other workspace")])
-        self.assertEqual(session.load(self.ws1, "1001")[0]["prompt"], "one")
-        self.assertEqual(session.load(self.ws1, "1002")[0]["prompt"], "two")
-        self.assertEqual(session.load(self.ws2, "1001")[0]["prompt"], "other workspace")
-        self.assertEqual(session.load(self.ws2, "1002"), [])
-        self.assertEqual(len([f for f in os.listdir(self.store) if f.endswith(".json")]), 3)
-
-    def test_nothing_written_into_workspace(self):
-        session.save(self.ws1, "7", [self.turn("x")])
-        self.assertEqual(os.listdir(self.ws1), [])
-
-    def test_recreated_workspace_starts_fresh(self):
-        session.save(self.ws1, "5", [self.turn("old")])
-        shutil.rmtree(self.ws1)
-        os.mkdir(self.ws1 + "_spacer")  # make inode reuse unlikely
-        os.mkdir(self.ws1)
-        try:
-            self.assertEqual(session.load(self.ws1, "5"), [])
-        finally:
-            os.rmdir(self.ws1 + "_spacer")
-
-    def test_expiry_and_prune(self):
-        session.save(self.ws1, "9", [self.turn("stale")])
-        path = os.path.join(self.store, os.listdir(self.store)[0])
-        old = time.time() - session.MAX_AGE - 60
-        os.utime(path, (old, old))
-        self.assertEqual(session.load(self.ws1, "9"), [])
-        session.save(self.ws1, "10", [self.turn("fresh")])
-        self.assertFalse(os.path.exists(path), "stale history was not pruned")
-
-    def test_turn_limit_and_clipping(self):
-        session.save(self.ws1, "3", [self.turn(str(i)) for i in range(session.MAX_TURNS + 12)])
-        turns = session.load(self.ws1, "3")
-        self.assertEqual(len(turns), session.MAX_TURNS)
-        self.assertEqual(turns[-1]["prompt"], str(session.MAX_TURNS + 11))
-        long = session.make_turn("p" * 10000, [], "success", "m" * 10000)
-        self.assertLess(len(long["prompt"]), 4100)
-
-    def test_corrupt_file_is_ignored(self):
-        session.save(self.ws1, "4", [self.turn("x")])
-        path = os.path.join(self.store, os.listdir(self.store)[0])
-        with open(path, "w") as f:
-            f.write("{not json")
-        self.assertEqual(session.load(self.ws1, "4"), [])
-        self.assertTrue(session.save(self.ws1, "4", [self.turn("y")]))
-        self.assertEqual(session.load(self.ws1, "4")[0]["prompt"], "y")
-
-    def test_unwritable_store_falls_back(self):
-        blocker = os.path.join(self.store, "file")
-        open(blocker, "w").close()
-        os.environ["AGENT_SESSION_DIR"] = os.path.join(blocker, "sub")  # cannot be created
-        self.assertTrue(session.save(self.ws1, "88", [self.turn("fallback")]))
-        self.assertEqual(session.load(self.ws1, "88")[0]["prompt"], "fallback")
-        for d in session._candidates(self.ws1)[1:]:  # clean the real store we fell back to
-            try:
-                os.unlink(os.path.join(d, session._file_name(self.ws1, "88")))
-            except OSError:
-                pass
-
-    def test_unicode_and_surrogates_survive(self):
-        t = session.make_turn("naïve 日本 \udcff", [], "success", "ok ✓")
-        self.assertTrue(session.save(self.ws1, "6", [t]))
-        self.assertEqual(session.load(self.ws1, "6")[0]["message"], "ok ✓")
-
-    def test_render(self):
-        text = session.render([self.turn("first"), self.turn("second")])
-        self.assertIn("[Turn 1] User: first", text)
-        self.assertIn("Action: read_file {} -> read 5 characters", text)
-        self.assertIn("[Turn 2] User: second", text)
-        self.assertIn("Reply (success): ok second", text)
-        self.assertEqual(session.render([]), "")
-
-    def test_workspace_fallback_dir_is_invisible_to_the_agent(self):
-        os.makedirs(os.path.join(self.ws1, session.WORKSPACE_FALLBACK))
-        with open(os.path.join(self.ws1, session.WORKSPACE_FALLBACK, "s.json"), "w") as f:
-            f.write("{}")
-        self.assertEqual(verify.snapshot(self.ws1)[0], {})
-        self.assertEqual(Sandbox(self.ws1).listing(), [])
-        with self.assertRaises(AgentError):
-            Sandbox(self.ws1).resolve(session.WORKSPACE_FALLBACK + "/s.json")
-
-
 class ArgParsing(unittest.TestCase):
     def test_shapes(self):
+        # CLI-2: argv[1] is the whole prompt, argv[2] the session id, the rest is ignored.
         p = agent_main.parse_args
-        self.assertEqual(p(["Read a.csv", "1001"]), ("Read a.csv", "1001"))
-        self.assertEqual(p(["Read a.csv", " 7 "]), ("Read a.csv", "7"))
-        self.assertEqual(p(["Read a.csv"]), ("Read a.csv", None))
-        self.assertEqual(p(["Read a.csv", ""]), ("Read a.csv", None))
-        self.assertEqual(p(["Create", "a.txt"]), ("Create a.txt", None))
-        self.assertEqual(p(["Read a.csv", "abc"]), ("Read a.csv abc", None))
-        self.assertEqual(p(["Set", "x", "to", "5"]), ("Set x to 5", None))
-        self.assertEqual(p([]), ("", None))
-        self.assertEqual(p(["", "1001"]), ("", "1001"))
-
+        self.assertEqual(p(["Read a.csv", "1001"]), ("Read a.csv", "1001", []))
+        self.assertEqual(p(["Read a.csv", " 7 "]), ("Read a.csv", "7", []))
+        self.assertEqual(p(["Read a.csv"]), ("Read a.csv", None, []))
+        self.assertEqual(p(["Read a.csv", ""]), ("Read a.csv", None, []))
+        self.assertEqual(p(["Read a.csv", "abc"]), ("Read a.csv", "abc", []))
+        self.assertEqual(p(["Set", "x", "to", "5"]), ("Set", "x", ["to", "5"]))
+        self.assertEqual(p([]), ("", None, []))
+        self.assertEqual(p(["", "1001"]), ("", "1001", []))
 
 
 class MoreCsvEdgeCases(unittest.TestCase):
