@@ -31,6 +31,7 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.S | re.I)
 RETRY_STATUS = (408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529, 530)
 FATAL_STATUS = (401, 403, 404)
 MAX_ATTEMPTS = 5          # per completion, for transient failures
+RATE_ATTEMPTS = 8         # 429/503/529 and proxy glitches: the shared endpoint is busy, wait longer
 _CONTEXT_400 = re.compile(r"context|maximum|max_tokens|too long|tokens", re.I)
 
 
@@ -310,7 +311,9 @@ class LLM:
                 proxy_glitch = e.code == 400 and detail.lstrip().lower().startswith(("<!doctype", "<html"))
                 if proxy_glitch:
                     last_err = "HTTP 400 from a proxy in front of the model (HTML error page)"
-                if (e.code in RETRY_STATUS or proxy_glitch or (e.code == 400 and attempt < 2)) and attempt < MAX_ATTEMPTS:
+                busy = proxy_glitch or e.code in (429, 503, 529)
+                limit = RATE_ATTEMPTS if busy else MAX_ATTEMPTS
+                if (e.code in RETRY_STATUS or proxy_glitch or (e.code == 400 and attempt < 2)) and attempt < limit:
                     wait = min(16.0, 1.0 * (2 ** min(attempt - 1, 4))) * (0.75 + random.random() / 2)
                     try:
                         ra = e.headers.get("Retry-After") if e.headers else None

@@ -75,6 +75,21 @@ class Report:
                     return True
         return False
 
+    def _linked_errors(self, limit=2):
+        """Error/stack-trace log entries that mention a linked identifier (the
+        evidence a root-cause answer should come from)."""
+        linked = [x for x in self.linked_values() if len(x) >= 4]
+        hits = []
+        for recs in self.records():
+            for r in recs:
+                if ("Caused by" in r or "Exception" in r or "ERROR" in r) and any(x in r for x in linked):
+                    hits.append(r[:900])
+                    if len(hits) >= limit:
+                        break
+        if not hits:
+            return ""
+        return " Error entries that DO mention the request's identifiers:\n" + "\n---\n".join(hits)
+
     def linked_values(self):
         """Values transitively linked to the task's anchors: a value is linked
         when it occurs within a few lines of an anchor or of a linked value."""
@@ -158,8 +173,8 @@ class Report:
                 if self.anchors and len(v) >= 3 and v not in self.linked_values():
                     return ("UNLINKED (verify): %r occurs in the logs, but never in the same log entry as the failed "
                             "request's identifiers found so far (%s) - it may belong to another request/worker (a "
-                            "decoy). Set the identifiers that connect it first, or keep it only if you are sure."
-                            % (v, ", ".join(sorted(self.linked_values())[:6])))
+                            "decoy). Set the identifiers that connect it first, or keep it only if you are sure.%s"
+                            % (v, ", ".join(sorted(self.linked_values())[:6]), self._linked_errors()))
                 return "ok (found verbatim in the logs)"
             low = self.corpus().lower()
             if v.lower() in low:

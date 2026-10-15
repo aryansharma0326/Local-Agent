@@ -344,7 +344,7 @@ class DeepTools:
         start = max(1, int(start_line or 1))
         n = int(num_lines) if num_lines else (len(lines) if len(text) <= OUTPUT_CHARS else READ_LINES_DEFAULT)
         chunk = lines[start - 1:start - 1 + max(1, n)]
-        body = "\n".join("%5d| %s" % (start + i, l[:500]) for i, l in enumerate(chunk))
+        body = "\n".join("%5d| %s" % (start + i, profiling.render_line(l, 500)) for i, l in enumerate(chunk))
         more = ""
         if start - 1 + len(chunk) < len(lines):
             more = "\n[%d of %d lines shown; call read_file with start_line=%d for more]" % (

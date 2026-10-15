@@ -6,6 +6,7 @@ CSV anomaly profiles (CV-2, PG-2), log statistics and word-boundary grep
 import csv
 import datetime
 import io
+import json
 import os
 import re
 from decimal import Decimal, InvalidOperation
@@ -270,6 +271,29 @@ _SALIENT = re.compile(r"\b(ERROR|FATAL|CRITICAL|WARN(?:ING)?|SEVERE)\b|Exception
                       r"\b(fail(?:ed|ure)?|timeout|timed out|blocked|stalled|deadlock|refused|denied)\b", re.I)
 
 
+def render_line(line, max_line=400):
+    """A log line for display. A JSON-lines record is shown as key=value pairs
+    with multi-line string values (stack traces) expanded on their own lines."""
+    s = line
+    if s.lstrip().startswith("{"):
+        try:
+            obj = json.loads(s)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict):
+            flat, blocks = [], []
+            for k, v in obj.items():
+                if isinstance(v, str) and "\n" in v:
+                    blocks.append("    %s:\n" % k + "\n".join("        " + x for x in v.split("\n")))
+                else:
+                    flat.append("%s=%s" % (k, v if isinstance(v, str) else json.dumps(v)))
+            s = "{json} " + " ".join(flat)
+            if len(s) > max_line:
+                s = s[:max_line] + " [...]"
+            return s + ("\n" + "\n".join(blocks) if blocks else "")
+    return s if len(s) <= max_line else s[:max_line] + " [...]"
+
+
 def grep_files(files, rx, root, context=0, max_matches=40, max_line=400):
     """files: list of absolute paths. Returns (text, n_matches). When there are
     more matches than max_matches, error/warning/exception lines are shown
@@ -304,9 +328,7 @@ def grep_files(files, rx, root, context=0, max_matches=40, max_line=400):
             out.append("--")
         for j in range(lo, hi):
             mark = ":" if j == i else "-"
-            s = lines[j]
-            if len(s) > max_line:
-                s = s[:max_line] + " [...]"
+            s = render_line(lines[j], max_line)
             out.append("%s:%d%s %s" % (rel, j + 1, mark, s))
     # stack-trace continuation lines right after a shown match (multi-line entries)
     head = "%d matching line(s)%s" % (total, note)

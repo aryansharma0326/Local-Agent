@@ -228,6 +228,19 @@ class DeepAgent:
             rx = profiling.compile_pattern(t)
             text, n = profiling.grep_files(self.report.evidence, rx, self.root, 0, 25)
             anchors.append("$ grep %s  ->  %s" % (t, text))
+            # one hop further: the request-scoped ids on those lines (all their lines show status/time)
+            lines = [l for l in text.split("\n") if re.match(r"\S+:\d+: ", l)]
+            hop = []
+            for l in lines:
+                for k, v in re.findall(r"\b(req|request_id|request|rid|req_id)=([\w.:-]+)", l):
+                    if v not in hop:
+                        hop.append(v)
+            for v in hop[:6]:
+                text2, _ = profiling.grep_files(self.report.evidence, profiling.compile_pattern(v), self.root, 0, 8)
+                anchors.append("$ grep %s  ->  %s" % (v, text2))
+        if len(anchors) > 2:
+            anchors.append("(If the order has several requests, use the one whose status and time match the incident; "
+                           "an earlier or retried attempt with another status is not the failed request.)")
         keys = "\n".join("  %s (%s)%s" % (k, self.report.types[k], (" - " + self.report.desc[k][:160])
                                          if self.report.desc.get(k) else "") for k in self.report.order)
         return prompts.FIRST_DEBUGGING.format(

@@ -619,7 +619,7 @@ def _run_section(title, runner, jobs, show):
     if not jobs:
         print("(nothing selected)")
         return
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=int(os.environ.get("LIVE_WORKERS", "2"))) as pool:
         futures = [(name, pool.submit(fn, *args)) for name, fn, args in jobs]
         for name, fut in futures:
             runner.case(name, lambda f=fut: show(f.result()))
