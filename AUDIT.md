@@ -212,3 +212,30 @@ Initial = at audit time (commit 7245cb5). Final = after this work (commit 7886ee
 - **C-2 Session ids.** The assignment says ids are numeric; the spec (SS-3) also accepts non-digit ids (hashed). Both are supported; numeric ids are used as-is.
 - **C-3 CP3 harness language.** CP3 says the stdlib-only rule applies to `tally.py`, not the harness; we keep the harness stdlib-only anyway (CLI-13).
 - **C-4 Time limit.** CP1/CP2 reruns in the final submission are still 180 s per case (CP3: 300 s for "each of the 24 test cases"). We keep 165 s for non-CP3 tasks.
+
+## 6. Final verification results (2026-10-15)
+
+All runs below use the exact grader invocation (`cd <fresh workspace>; bash run_agent.sh "$PROMPT" [SESSION_ID]`), a new process per call, against `https://llm.montii.me/v1` / `Qwen/Qwen3-14B` with thinking disabled.
+
+| Suite | Result | Timing / calls |
+|---|---|---|
+| Offline (`bash tests/run_offline.sh`) | **439 / 439 pass** (13 suites: static, unit, mock E2E, CP3 twins, contract, fault injection) | 74–98 s |
+| Grader simulation (`bash tests/grader_sim.sh`) | **pass**: zip built (58 entries, nothing excluded leaked), extracted read-only into a path with spaces, offline suite 436/436 with `/bin/bash` 3.2 and a sanitized env (agent ran under `/usr/bin/python3` 3.9.6) | 89 s |
+| Unit suites on Python 3.9.6 | all pass | — |
+| CP1 + CP2 live, 3 repetitions (`tests/run_live.sh --reps 3 --only cp1,cp2`) | **273 / 273** (91 cases × 3; every case passed every rep) | p50 3.8 s, p95 42 s, max 75 s per run |
+| CP1 + CP2 live on the final commit (after the token-estimate change) | **91 / 91** | — |
+| CP3 programming live (A, B, C, OFFICIAL × seeds 1–3) | **231 / 234 checks (98.7%)**; 11 / 12 runs perfect | max 255 s, max 9 calls |
+| CP3 programming live re-check (A, B seed 4) | 45 / 45 | 91–130 s |
+| CP3 debugging live (7 scenarios × seeds 4–6) | **245 / 252 keys (97.2%)** | max 65 s, max 19 calls |
+| CP3 debugging live re-check after the last fixes (7 scenarios × seeds 7, 8, 10) | **247 / 252 keys (98.0%)** | max 62 s, max 18 calls |
+| CP3 debugging, renamed services (DB-10: edge/cart/pricing/dbproxy, seed 9) | 24 / 24 | ≤ 38 s |
+
+Release-gate status: CP1/CP2 100% over 3 reps (the spec's 5-rep gate was not completed because the shared endpoint went down and rate-limited during the attempt; see §7). CP3 per-key accuracy ≥ 90% on every generator family. Max runtime 75 s (CP1/CP2, limit 150 s) and 255 s (CP3, limit 270 s). Max model calls 19 (limit 100).
+
+## 7. Residual risks
+
+- **Shared endpoint instability.** During verification the course endpoint returned HTTP 400 "Bad request syntax" pages (a proxy mixing requests) and HTTP 429 under load. The agent now retries proxy-glitch 400s and 429/503 with backoff for up to ~60 s, always within the deadline; a longer outage still fails the run (the course says such runs are re-graded).
+- **CP3 programming variance.** Qwen3-14B occasionally leaves one option unimplemented in its first draft and runs out of time fixing it (1 of 14 runs). Harness checks (argument map, lint, option-ignored detection, fresh rewrite) catch it but the fix may not land in time.
+- **Hidden debugging keys** are typed from their wording; a timestamp question with two near-identical events (created vs queued, 10 ms apart in our generator) is the most common miss.
+- **5-hop chains / different services** were tested with renamed services (4 hops); a 5-hop variant was not generated.
+- **Python 3.8 / Linux** were not run directly (neither available); 3.9.6 runs pass and a static 3.8-grammar check is enforced.

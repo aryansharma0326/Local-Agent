@@ -215,13 +215,15 @@ Fixtures and expected results:
 
 ## Known limitations
 
-- **Model limits on CP3 programming.** Qwen3-14B without thinking sometimes misreads option values in its first
-  draft. The harness checks, lint and diagnostics recover most cases, but not all. See the latest live numbers in
-  `AUDIT.md`.
+- **Model limits on CP3 programming.** Qwen3-14B without thinking sometimes leaves one option unimplemented in
+  its first draft. The harness's argument map, lint, option-ignored checks and fresh-rewrite recover most cases;
+  1 of 14 live runs still lost 3 checks. Latest numbers are in `AUDIT.md` §6.
 - **Hidden debugging keys.** These are inferred from the task wording; a key whose type is ambiguous is typed
   from the model's value.
 - **Untested platforms.** Python 3.8 and Linux containers were not run (not installed on the development
-  machine). Compatibility is enforced statically: `ast` parsing with `feature_version=(3, 8)`, a scan for
-  3.9+ APIs, and POSIX-only shell.
+  machine). The unit suites pass on Python 3.9.6, the grader simulation runs the agent under 3.9.6, and a static
+  test parses every module with the Python 3.8 grammar.
+- **Shared endpoint.** Busy/rate-limited responses (429/503, proxy HTML 400s) are retried with backoff for up
+  to ~60 s inside the deadline; longer outages fail the run.
 - **Throughput.** At about 25 tokens/s, a CP3 program write takes 60–90 s. The 300 s limit leaves room for
   roughly two full rewrites plus edits.
