@@ -128,6 +128,8 @@ def main():
     ap.add_argument("--crlf", action="store_true")
     ap.add_argument("--bom", action="store_true")
     ap.add_argument("-v", action="store_true")
+    ap.add_argument("--names", default="gateway,orders,inventory,payments",
+                    help="debug: service names (DB-10 generality: e.g. edge,cart,pricing,dbproxy)")
     a = ap.parse_args()
     e = env()
     results = []
@@ -135,7 +137,8 @@ def main():
         for seed in [int(s) for s in a.seeds.split(",")]:
             items = a.scenarios.split(",") if a.what == "debug" else a.variants.split(",")
             for it in items:
-                r = run_debug(seed, it, e, a.hidden) if a.what == "debug" else run_prog(it, seed, e, a.crlf, a.bom)
+                r = run_debug(seed, it, e, a.hidden, a.names.split(",")) if a.what == "debug" else \
+                    run_prog(it, seed, e, a.crlf, a.bom)
                 results.append(r)
                 print("%-34s %2d/%-2d  %5.1fs  calls=%-3d exit=%s contract=%s %s" % (
                     r["case"], r["ok"], r["of"], r["time"], r["calls"], r["exit"], r["contract"] or "ok",

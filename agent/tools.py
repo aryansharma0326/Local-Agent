@@ -8,7 +8,7 @@ import csvtools
 from errors import AgentError
 
 MAX_FILE_CHARS = 60000   # per file, keeps observations inside Qwen3's 32k context
-MAX_TOTAL_CHARS = 90000  # all files of one read_files call together
+MAX_TOTAL_CHARS = 70000  # all files of one read_files call together (~28k tokens; CP1 sources are <= 40 KB)
 
 # Names models commonly use for our tools / arguments -> canonical names.
 TOOL_ALIASES = {

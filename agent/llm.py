@@ -53,8 +53,13 @@ def strip_think(text):
     return text.strip()
 
 
+# Logs, ids, hex and timestamps tokenize densely (~2.5 chars/token measured on the course
+# endpoint); a context-length 400 recalibrates this from the server's own count.
+CHARS_PER_TOKEN = [2.5]
+
+
 def estimate_tokens(messages, tools=None):
-    """Conservative token estimate: ceil(chars / 3) plus per-message overhead."""
+    """Conservative token estimate: chars / CHARS_PER_TOKEN plus per-message overhead."""
     chars = 0
     for m in messages:
         chars += len(m.get("content") or "") + 24
@@ -63,7 +68,7 @@ def estimate_tokens(messages, tools=None):
             chars += len(fn.get("name") or "") + len(fn.get("arguments") or "") + 40
     if tools:
         chars += len(json.dumps(tools, ensure_ascii=False))
-    return (chars + 2) // 3 + 16
+    return int(chars / CHARS_PER_TOKEN[0]) + 16
 
 
 # ------------------------------------------------------------ tool-call parsing
@@ -297,13 +302,29 @@ class LLM:
                 if e.code == 404:
                     raise LLMError("HTTP 404 from the model endpoint: check OPENAI_BASE_URL (%s) "
                                    "and MODEL (%s)." % (self.url, self.model))
-                if e.code == 400 and _CONTEXT_400.search(detail) and context_shrinks < 3:
+                if e.code == 400 and _CONTEXT_400.search(detail) and context_shrinks < 4:
                     context_shrinks += 1
-                    smaller = self._shrink(body["messages"])
-                    if smaller is not None and context_shrinks <= 2:
-                        body["messages"] = smaller
-                    body["max_tokens"] = max(128, body["max_tokens"] // 2)
                     last_err = "context length exceeded"
+                    m = re.search(r"prompt contains at least (\d+) input tokens", detail) or \
+                        re.search(r"(\d{4,6}) (?:input|prompt) tokens", detail)
+                    if m:
+                        chars = estimate_tokens(body["messages"], tools) * CHARS_PER_TOKEN[0]
+                        ratio = chars / max(1, int(m.group(1)))
+                        CHARS_PER_TOKEN[0] = max(1.5, min(CHARS_PER_TOKEN[0], ratio * 0.92))
+                        log("recalibrated estimate: %.2f chars/token" % CHARS_PER_TOKEN[0])
+                    else:
+                        CHARS_PER_TOKEN[0] = max(1.5, CHARS_PER_TOKEN[0] * 0.85)
+                    msgs2 = self._shrink(body["messages"]) or body["messages"]  # the server said: too big
+                    want = max(256, min(body["max_tokens"], 1024))
+                    for _ in range(40):
+                        if self.max_tokens_for(msgs2, tools, want, 256) is not None:
+                            break
+                        smaller = self._shrink(msgs2)
+                        if smaller is None:
+                            break
+                        msgs2 = smaller
+                    body["messages"] = msgs2
+                    body["max_tokens"] = self.max_tokens_for(msgs2, tools, want, 128) or 128
                     continue
                 last_err = "HTTP %s" % e.code
                 if e.code == 530 or "1033" in detail:

@@ -96,6 +96,7 @@ class Client(unittest.TestCase):
         self.saved = {k: os.environ.get(k) for k in ("OPENAI_BASE_URL", "MODEL", "QWEN_API_KEY", "OPENAI_API_KEY")}
         os.environ.update(OPENAI_BASE_URL=self.srv.base_url, MODEL="Qwen/Qwen3-14B", QWEN_API_KEY="secret-key-123")
         config.set_task_kind("simple")
+        llm.CHARS_PER_TOKEN[0] = 2.5
 
     def tearDown(self):
         for k, v in self.saved.items():
@@ -128,12 +129,12 @@ class Client(unittest.TestCase):
     def test_l03_max_tokens_shrinks_with_prompt(self):
         c = llm.LLM()
         small = c.max_tokens_for([{"role": "user", "content": "x" * 300}], None, 8000)
-        big = c.max_tokens_for([{"role": "user", "content": "x" * 100000}], None, 8000)
+        big = c.max_tokens_for([{"role": "user", "content": "x" * 82000}], None, 8000)
         self.assertEqual(small, 8000)
         self.assertLess(big, 8000)
-        est = llm.estimate_tokens([{"role": "user", "content": "x" * 100000}])
+        est = llm.estimate_tokens([{"role": "user", "content": "x" * 82000}])
         self.assertLessEqual(est + big, config.CONTEXT_TOKENS)
-        self.assertIsNone(c.max_tokens_for([{"role": "user", "content": "x" * 130000}], None, 8000))
+        self.assertIsNone(c.max_tokens_for([{"role": "user", "content": "x" * 110000}], None, 8000))
 
     def test_l04_tool_call_parsing(self):
         p = llm.parse_text_tool_calls

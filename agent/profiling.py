@@ -313,12 +313,15 @@ def grep_files(files, rx, root, context=0, max_matches=40, max_line=400):
     if not total:
         return "no matches", 0
     max_matches = max(5, max_matches)
+    if context:
+        max_matches = min(max_matches, max(4, 120 // (2 * context + 1)))  # keep the output readable
     chosen = hits
     note = ""
     if total > max_matches:
         salient = [h for h in hits if _SALIENT.search(h[1][h[2]])]
         rest = [h for h in hits if not _SALIENT.search(h[1][h[2]])]
-        chosen = sorted((salient + rest)[:max_matches], key=lambda h: (h[0], h[2]))
+        chosen = salient[:max_matches] + sorted(rest[:max(0, max_matches - len(salient))],
+                                                key=lambda h: (h[0], h[2]))
         note = (" (showing %d: %d error/warning-like lines first, then others; narrow with regex=true, e.g. "
                 "'ID.*ERROR', or pass a path)" % (max_matches, min(len(salient), max_matches)))
     out, last_key = [], None
