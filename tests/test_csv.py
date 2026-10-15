@@ -315,6 +315,19 @@ class ArgParsing(unittest.TestCase):
         self.assertEqual(p(["", "1001"]), ("", "1001", []))
 
 
+class ColumnMatching(unittest.TestCase):
+    def test_cv03_exact_case_space_prefix_and_ambiguity(self):
+        t = Table("Unit Price,qty_on_hand,quantity_sold\n1.5,3,4\n")
+        self.assertEqual(t.column("unit_price"), 0)
+        self.assertEqual(t.column("UNIT PRICE"), 0)
+        self.assertEqual(t.column("qty"), 1)                       # unique prefix
+        with self.assertRaisesRegex(AgentError, "no column"):
+            t.column("q")                                          # too short / ambiguous prefix
+        t2 = Table("a_b,ab\n1,2\n")
+        with self.assertRaisesRegex(AgentError, "ambiguous"):
+            t2.column("A B")
+
+
 class MoreCsvEdgeCases(unittest.TestCase):
     def test_duplicate_column_names_use_first_exact_match(self):
         t = Table("score,score,name\n1,10,a\n2,20,b\n")

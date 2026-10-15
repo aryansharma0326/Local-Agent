@@ -110,6 +110,21 @@ def t_db_twin_ideal_calls():
     expect("ANCHOR SEARCH" in first and key["gateway_request_id"] in first, "anchor pre-fetch missing")
 
 
+def t_db10_generality_renamed_services_and_deliverable():
+    logs, key, prompt = gen_logs.generate(4, {"json_lines", "mixed_ts"}, "ORD-55120", ["edge", "cart", "pricing", "dbproxy"], 6)
+    prompt = prompt.replace("REPORT.json", "FINDINGS.json")
+    files = dict(("logs/%s.log" % n, t) for n, t in logs.items())
+    ws = Workspace(files)
+    r = go(ws, prompt, [tc("report_set", values=key), tc("finish", message="done")])
+    expect(r.status == "success", r.stdout)
+    expect(ws.exists("FINDINGS.json") and not ws.exists("REPORT.json"), "wrong deliverable name")
+    got = json.loads(ws.read("FINDINGS.json"))
+    expect(got == key, "values differ: %r" % got)
+    expect("task kind: debugging" in r.stderr, "not routed to debugging")
+    obs = "\n".join(m["content"] for q in SERVER.requests for m in q["body"]["messages"] if m["role"] == "tool")
+    expect("UNLINKED" not in obs and "NOT FOUND" not in obs, "correct values were flagged: %s" % obs[:400])
+
+
 def t_db_placeholder_written_first_and_types_coerced():
     ws, key, prompt, _ = debug_ws(2)
     r = go(ws, prompt, [tc("report_set", values={"gateway_status": "502", "worker_queue_depth": str(key["worker_queue_depth"]),

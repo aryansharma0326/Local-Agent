@@ -161,6 +161,14 @@ class Table:
         hits = [i for i, h in enumerate(self.header) if _key(h) == _key(want)]
         if len(hits) == 1:
             return hits[0]
+        if len(hits) > 1:
+            raise AgentError("%s: column '%s' is ambiguous; candidates: %s." % (
+                self.name, name, ", ".join(self.header[i] for i in hits)))
+        w = _key(want)
+        if len(w) >= 3 and role != "id":  # unique prefix: 'qty' -> 'qty_on_hand'
+            pre = [i for i, h in enumerate(self.header) if _key(h).startswith(w)]
+            if len(pre) == 1:
+                return pre[0]
         if role == "id":  # 'id' may be spelled 'ID', 'record_id', 'Order Id', ...
             hits = [i for i, h in enumerate(self.header) if _key(h).endswith("id")]
             if len(hits) == 1 and _key(want) in ("id", "rowid", "recordid", ""):

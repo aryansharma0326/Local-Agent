@@ -443,6 +443,22 @@ class DeepAgent:
         except OSError:
             return []
         out = []
+        # every option and command the task names must at least appear in the program
+        names = set(re.findall(r"(?<![\w-])(--[a-z][\w-]*)", self.prompt))
+        missing_opts = sorted(n for n in names if not re.search(r"[\"'](?:--)?%s[\"'=]" % re.escape(n[2:]), src))
+        cmds = []
+        for c in self._all_examples():
+            t = c.split()
+            if len(t) >= 3 and not t[2].startswith("-") and t[2] not in cmds:
+                cmds.append(t[2])
+        missing_cmds = [c for c in cmds if not re.search(r"[\"']%s[\"']" % re.escape(c), src)]
+        if missing_cmds:
+            out.append("BUG (static check): the task's command(s) %s never appear in the program; implement them."
+                       % ", ".join(missing_cmds))
+        if missing_opts:
+            out.append("BUG (static check): the task's option(s) %s are never read by the program (no \"%s\" string "
+                       "in the code); implement them (read with opts.get(\"%s\"))." % (
+                           ", ".join(missing_opts), missing_opts[0], missing_opts[0]))
         m = re.search(r"\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*=\s*[^\n]*parse_args\(|(\w+)\s*,\s*(\w+)\s*=\s*parse_args\(", src)
         if not m:
             return out
