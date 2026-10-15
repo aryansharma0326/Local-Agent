@@ -785,9 +785,16 @@ class DeepAgent:
     def _finish(self, args):
         msg = str((args or {}).get("message") or "").strip()
         problems = self._deliverable_problems(strict=True)
-        if problems and self.finish_rejects < 2 and config.remaining() > WRAP_SECONDS + 20:
+        unset = self.kind == "debugging" and any(k not in self.report.set_keys for k in self.report.order)
+        max_rejects = 4 if unset else 2
+        if problems and self.finish_rejects < max_rejects and config.remaining() > WRAP_SECONDS + 20:
             self.finish_rejects += 1
-            return "ERROR: not finished yet:\n- " + "\n- ".join(problems)
+            hint = ""
+            if unset:
+                hint = ("\nKeep investigating the unset keys (do not give up): grep the identifiers you already "
+                        "confirmed together with ERROR/WARN, read_lines around stack traces, count with run_python."
+                        + self.report._linked_errors())
+            return "ERROR: not finished yet:\n- " + "\n- ".join(problems) + hint
         self.final_message = msg or None
         return "FINISH-ACCEPTED"
 

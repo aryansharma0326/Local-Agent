@@ -77,18 +77,22 @@ class Report:
 
     def _linked_errors(self, limit=2):
         """Error/stack-trace log entries that mention a linked identifier (the
-        evidence a root-cause answer should come from)."""
+        evidence a root-cause answer should come from), stack traces with a
+        'Caused by' first."""
+        import profiling
         linked = [x for x in self.linked_values() if len(x) >= 4]
         hits = []
         for recs in self.records():
             for r in recs:
                 if ("Caused by" in r or "Exception" in r or "ERROR" in r) and any(x in r for x in linked):
-                    hits.append(r[:900])
-                    if len(hits) >= limit:
-                        break
+                    rank = (2 if "Caused by" in r else 0) + (1 if "Exception" in r else 0)
+                    hits.append((-rank, len(hits), r))
         if not hits:
             return ""
-        return " Error entries that DO mention the request's identifiers:\n" + "\n---\n".join(hits)
+        shown = [profiling.render_line(r, 900) if r.lstrip().startswith("{") else r[:900]
+                 for _, _, r in sorted(hits)[:limit]]
+        return (" Error entries that DO mention the request's identifiers (the innermost 'Caused by' usually names "
+                "the responsible component):\n" + "\n---\n".join(shown))
 
     def linked_values(self):
         """Values transitively linked to the task's anchors: a value is linked
