@@ -201,6 +201,13 @@ class Client(unittest.TestCase):
             self.assertLess(time.monotonic() - t0, 2)
             self.assertEqual(len(self.srv.requests), 1)
 
+    def test_html_400_is_retried_as_transient(self):
+        page = '<!DOCTYPE HTML><html><body><p>Error code: 400</p><p>Bad request syntax</p></body></html>'
+        self.srv.reset([{"status": 400, "body": page}] * 3 + ["recovered"])
+        r = llm.LLM().complete([{"role": "user", "content": "x"}])
+        self.assertEqual(r.content, "recovered")
+        self.assertEqual(len(self.srv.requests), 4)
+
     def test_context_length_400_shrinks(self):
         self.srv.reset([{"status": 400, "body": '{"error": "maximum context length is 40960 tokens"}'}, "fine"])
         msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "t"},

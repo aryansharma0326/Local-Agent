@@ -307,7 +307,10 @@ class LLM:
                 last_err = "HTTP %s" % e.code
                 if e.code == 530 or "1033" in detail:
                     last_err = "HTTP %s: the model server is offline or unreachable" % e.code
-                if (e.code in RETRY_STATUS or (e.code == 400 and attempt < 2)) and attempt < MAX_ATTEMPTS:
+                proxy_glitch = e.code == 400 and detail.lstrip().lower().startswith(("<!doctype", "<html"))
+                if proxy_glitch:
+                    last_err = "HTTP 400 from a proxy in front of the model (HTML error page)"
+                if (e.code in RETRY_STATUS or proxy_glitch or (e.code == 400 and attempt < 2)) and attempt < MAX_ATTEMPTS:
                     wait = min(16.0, 1.0 * (2 ** min(attempt - 1, 4))) * (0.75 + random.random() / 2)
                     try:
                         ra = e.headers.get("Retry-After") if e.headers else None
