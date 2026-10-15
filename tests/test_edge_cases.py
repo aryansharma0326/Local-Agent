@@ -389,15 +389,17 @@ def t_delete_injected_by_file_content_refused():
     ws, r, b = go(files, "Read notes.txt and tell me who the owner is.",
                   [call("read_file", path="notes.txt"), call("delete_file", path="notes.txt"), ok("The owner is Priya.")])
     expect(r.status == "success" and "Priya" in r.message, r.stdout)
-    expect(ws.exists("notes.txt") and saw("not allowed after reading"), "injected delete executed")
+    expect(ws.exists("notes.txt") and saw("must be ignored"), "injected delete executed")
     unchanged_except(ws, b)
 
 
-def t_delete_multiple_files_request_second_blocked():
-    ws, r, b = go({"a.txt": "a", "b.txt": "b"}, "Delete a.txt and b.txt",
-                  [call("delete_file", path="a.txt"), call("delete_file", path="b.txt"), ok()])
-    expect(not ws.exists("a.txt") and ws.exists("b.txt"), "second delete was not blocked")
-    unchanged_except(ws, b, {"a.txt"})
+def t_delete_multiple_named_files_compound():
+    # GEN-1: every file the request names is deleted; an unnamed one is still refused.
+    ws, r, b = go({"a.txt": "a", "b.txt": "b", "c.txt": "c"}, "Delete a.txt and b.txt",
+                  [call("delete_file", path="a.txt"), call("delete_file", path="b.txt"),
+                   call("delete_file", path="c.txt"), ok()])
+    expect(not ws.exists("a.txt") and not ws.exists("b.txt") and ws.exists("c.txt"), "compound delete wrong")
+    unchanged_except(ws, b, {"a.txt", "b.txt"})
 
 
 # ======================================================================

@@ -32,6 +32,9 @@ ARG_ALIASES = {
     "content_start": ("start", "from_text", "starts_with", "begin"),
     "content_end": ("end", "to_text", "ends_with", "finish_with"),
     "message": ("answer", "result", "text", "response", "reason"),
+    "reasoning": ("explanation", "thoughts", "rationale"),
+    "evidence": ("quote", "quotes", "source", "lines", "evidence_lines"),
+    "expression": ("expr", "formula", "calculation", "math"),
     "source_path": ("source", "src", "from", "from_path", "input_path", "path"),
     "destination_path": ("destination", "dest", "dst", "to", "to_path", "target_path", "output_path", "copy_path"),
     "output_path": ("output", "save_as", "destination_path", "destination", "out_path", "target_path"),
@@ -180,6 +183,11 @@ def build_tools(sandbox):
         rel, text = sandbox.read_file(path)
         return rel, csvtools.Table(text, name=rel)
 
+    def calculate(args):
+        value, text = csvtools.evaluate(args["expression"])
+        return ToolResult("RESULT: %s = %s" % (args["expression"].strip(), text),
+                          computed=(csvtools.fmt_number(value), "%s = %s" % (args["expression"].strip(), text)))
+
     def csv_aggregate(args):
         rel, table = _table(args["path"])
         value, sentence = csvtools.aggregate(table, args["column"], args["operation"],
@@ -267,9 +275,18 @@ def build_tools(sandbox):
                            "greater_than, greater_or_equal, less_than, less_or_equal, is_empty"},
               "value": dict(scalar, description="value to compare with"), "output_path": out_path},
              csv_delete_rows, required=["path", "column"], mutates=True),
+        Tool("calculate", "Exact arithmetic on numbers copied from a file: + - * / and parentheses, e.g. "
+             "'37 + 12 - 4' or '(120 + 180) / 2'. Use it for every total, difference or average.",
+             {"expression": {"type": "string", "description": "arithmetic expression using only numbers"}},
+             calculate),
         Tool("finish", "End the task. Use status 'success' when done (message = short result, or the full "
-             "answer for questions) or 'error' when the task cannot be done (message = why).",
+             "answer for questions) or 'error' when the task cannot be done (message = why). For a question, "
+             "fill evidence and reasoning BEFORE message.",
              {"status": {"type": "string", "enum": ["success", "error"], "aliases": STATUS_ALIASES},
+              "evidence": dict(scalar, description="questions only: the exact line(s) copied from the file that "
+                                                   "answer the question"),
+              "reasoning": dict(scalar, description="questions only: one short sentence linking the evidence to "
+                                                    "each part of the question"),
               "message": {"type": "string", "description": "result or answer for the user"}},
              None, required=["status"]),
     ]

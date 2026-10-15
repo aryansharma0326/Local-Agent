@@ -307,3 +307,43 @@ def delete_rows(table, column, operator, value):
         len(doomed), len(table.data), table.header[idx], operator or "equals",
         "" if op == "empty" else value, kept)
     return table.text(records), len(doomed), kept, sentence
+
+
+# ------------------------------------------------------------ calculator
+def evaluate(expression):
+    """Safely evaluate + - * / ( ) and unary minus over decimal literals with
+    Decimal arithmetic. Returns (Decimal, formatted text). Raises AgentError."""
+    import ast
+    expr = (expression or "").strip().replace("\u00d7", "*").replace("\u2212", "-").replace("x", "*") \
+        if re.fullmatch(r"[\d\s.,+\-*/()x\u00d7\u2212$%]+", (expression or "").strip()) else (expression or "").strip()
+    expr = re.sub(r"(?<=\d),(?=\d{3}\b)", "", expr).replace("$", "")
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        raise AgentError("calculate accepts only numbers, + - * / and parentheses (got %r)" % expression)
+
+    def ev(n):
+        if isinstance(n, ast.Expression):
+            return ev(n.body)
+        if isinstance(n, ast.BinOp) and isinstance(n.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+            a, b = ev(n.left), ev(n.right)
+            if isinstance(n.op, ast.Add):
+                return a + b
+            if isinstance(n.op, ast.Sub):
+                return a - b
+            if isinstance(n.op, ast.Mult):
+                return a * b
+            if b == 0:
+                raise AgentError("division by zero")
+            return a / b
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.USub, ast.UAdd)):
+            v = ev(n.operand)
+            return -v if isinstance(n.op, ast.USub) else v
+        num = getattr(n, "value", getattr(n, "n", None))
+        if isinstance(n, (ast.Constant, getattr(ast, "Num", ast.Constant))) and isinstance(num, (int, float)) \
+                and not isinstance(num, bool):
+            return Decimal(str(num))
+        raise AgentError("calculate accepts only numbers, + - * / and parentheses (got %r)" % expression)
+
+    value = ev(tree)
+    return value, describe_number(value)
