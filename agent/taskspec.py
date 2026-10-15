@@ -122,6 +122,24 @@ def example_commands(prompt):
     return out
 
 
+_SIG = re.compile(r"(?:\*\*|^\s*(?:\d{1,2}[.)]|[*-])\s+)`([a-z][\w-]*(?: +(?:--[a-z][\w-]*|[A-Z][A-Z0-9_]*|YYYY-MM-DD|"
+                  r"D\d|\[[^\]`]+\]))*)`", re.M)
+
+
+def command_signatures(prompt, program):
+    """Commands the task describes as bold/list-item code signatures, e.g.
+    **`avg --category NAME`** -> 'python3 prog.py avg --category NAME'."""
+    out = []
+    for m in _SIG.finditer(prompt):
+        sig = m.group(1).strip()
+        if "[" in sig or sig.split()[0] in ("python", "python3", "py"):
+            continue
+        cmd = "python3 %s %s" % (program, sig)
+        if cmd not in out:
+            out.append(cmd)
+    return out
+
+
 def signatures(prompt):
     return re.findall(r"\bdef\s+([A-Za-z_]\w*)\s*\(([^)]*)\)", prompt)
 

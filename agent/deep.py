@@ -147,12 +147,77 @@ class DeepAgent:
         if self.smoke_cmds:
             cmds = ("HARNESS CHECKS: after every write/edit the harness compiles %s and runs:\n%s\n" % (
                 self.primary, "\n".join("  $ " + c for c in self.smoke_cmds)))
+        amap = self._arg_map()
+        if amap:
+            cmds = amap + "\n" + cmds
         return prompts.FIRST_PROGRAMMING.format(
             prompt=self.prompt, deliverables=", ".join(self.deliverables), scratch=self.scratch,
             checklist="\n".join("  " + c for c in taskspec.checklist(self.prompt)) or "  (see task)",
             listing=self._listing(),
             data=("DATA PROFILE (computed by the harness):\n" + "\n\n".join(data) + "\n") if data else "",
             commands=("\n".join(code) + "\n\n" if code else "") + cmds)
+
+    def _all_examples(self):
+        """Example invocations written in the task plus command signatures whose
+        command word has no example yet."""
+        ex = taskspec.example_commands(self.prompt)
+        if self.primary and self.primary.endswith(".py"):
+            have = set(c.split()[2] for c in ex if len(c.split()) >= 3)
+            for c in taskspec.command_signatures(self.prompt, self.primary):
+                if c.split()[2] not in have:
+                    ex.append(c)
+                    have.add(c.split()[2])
+        return ex
+
+    def _arg_map(self):
+        """An explicit argument map derived from the task text: which --options
+        take a value (and how to read them) and which arguments are positional."""
+        opts = []
+        for m in re.finditer(r"(?<![\w-])(--[a-z][\w-]*)(?:(?:[ =])(\[?[A-Z][A-Z0-9_]*\]?|YYYY-MM-DD|D\d|<[^>\s]+>))?",
+                             self.prompt):
+            name, ph = m.group(1), m.group(2)
+            found = [o for o in opts if o[0] == name]
+            if not found:
+                opts.append([name, ph])
+            elif ph and not found[0][1]:
+                found[0][1] = ph
+        if not opts:
+            return ""
+        values = [o for o in opts if o[1]]
+        flags = [o[0] for o in opts if not o[1]]
+        lines = ["ARGUMENT MAP (derived from the task text; follow it exactly):"]
+        if values:
+            lines.append("  options that take a value - read ONLY from opts: " + ", ".join(
+                '%s %s -> opts.get("%s")' % (n, ph.strip("[]<>"), n) for n, ph in values))
+        if flags:
+            lines.append("  flags without a value - put exactly these in FLAGS: FLAGS = {%s}; read as opts.get(\"%s\") is True"
+                         % (", ".join('"%s"' % f for f in flags), flags[0]))
+        seen = []
+        for c in self._all_examples():
+            toks = c.split()
+            if len(toks) < 3 or toks[2].startswith("-"):
+                continue
+            cmd, rest, pos, used, i = toks[2], toks[3:], [], [], 0
+            while i < len(rest):
+                t = rest[i]
+                if t.startswith("--"):
+                    used.append(t.split("=")[0])
+                    i += 2 if (t.split("=")[0] in [v[0] for v in values] and "=" not in t) else 1
+                    continue
+                pos.append(t)
+                i += 1
+            desc = "  command %r: " % cmd
+            parts = []
+            if pos:
+                parts.append("positionals " + ", ".join("%s = pos[%d]" % (p, k) for k, p in enumerate(pos)))
+            if used:
+                parts.append("options " + ", ".join('opts.get("%s")' % u for u in used))
+            desc += "; ".join(parts) if parts else "no arguments"
+            if desc not in seen:
+                seen.append(desc)
+        lines.extend(seen)
+        lines.append("  Options never appear in pos; never compare pos items with \"--...\" strings.")
+        return "\n".join(lines)
 
     def _first_debugging(self):
         stats = []
@@ -180,7 +245,7 @@ class DeepAgent:
     # --------------------------------------------------------- smoke tests
     def _smoke_commands(self):
         cmds = []
-        for c in taskspec.example_commands(self.prompt):
+        for c in self._all_examples():
             filled = self._fill(c)
             if filled and filled not in cmds:
                 cmds.append(filled)
@@ -198,8 +263,15 @@ class DeepAgent:
         """Edge-case variants of the examples: unmatched filter value, large N,
         missing --file. Any traceback/timeout there is a bug whatever the spec says."""
         out = []
-        for c in taskspec.example_commands(self.prompt):
+        for c in self._all_examples():
             toks = c.split()
+            optidx = [i for i, t in enumerate(toks) if t.startswith("--") and i + 1 < len(toks)
+                      and not toks[i + 1].startswith("--")]
+            if len(optidx) >= 2:
+                for i in optidx:
+                    alt = self._fill(" ".join(toks[:i] + toks[i + 2:]))
+                    if alt not in out and alt not in self.smoke_cmds:
+                        out.append(alt)
             for i, t in enumerate(toks):
                 core = t.strip("'\"")
                 alt = None
@@ -215,7 +287,7 @@ class DeepAgent:
             base = self.smoke_cmds[0].split()
             if len(base) >= 3:
                 out.append(" ".join(base[:3] + ["--file", "no_such_file.csv"]))
-        return out[:6]
+        return out[:8]
 
     def _fill(self, cmd):
         """Replace placeholders in an example command with values from the data."""
@@ -457,7 +529,14 @@ class DeepAgent:
         hist = getattr(self, "problem_history", [])
         hist.append(tuple(getattr(self, "last_problems", []) or []))
         self.problem_history = hist
-        if len(hist) >= 3 and hist[-1] and hist[-1] == hist[-2] == hist[-3]:
+        stuck = (len(hist) >= 3 and hist[-1] and hist[-1] == hist[-2] == hist[-3]) or (
+            len(hist) >= 2 and any(p.startswith("BUG (static") for p in hist[-1])
+            and any(p.startswith("BUG (static") for p in hist[-2]))
+        if stuck and getattr(self, "restarts", 0) < 2 and config.remaining() > 110:
+            self.restarts = getattr(self, "restarts", 0) + 1
+            self.restart_pending = list(hist[-1])
+            log("no progress: scheduling a fresh rewrite (#%d)" % self.restarts)
+        elif len(hist) >= 3 and hist[-1] and hist[-1] == hist[-2] == hist[-3]:
             revert += ("\n(harness) Your last edits did not change any check result, so the cause is somewhere "
                        "else. Re-read the CURRENT file from the top (how arguments/options are parsed and looked up, "
                        "how rows are loaded) and fix the real cause; or run a small experiment with run_python.")
@@ -530,7 +609,7 @@ class DeepAgent:
         if self.kind == "debugging":
             return 1024, 256
         written = os.path.exists(os.path.join(self.root, self.primary)) if self.primary else False
-        want = 3000 if written else 8000
+        want = 3000 if written and not getattr(self, "want_rewrite", False) else 8000
         by_time = self.llm.time_tokens(config.remaining() - WRAP_SECONDS - 10)
         return max(512, min(want, by_time)), 512
 
@@ -542,6 +621,16 @@ class DeepAgent:
             if why:
                 log("wrap-up: %s" % why)
                 return self._wrapup(why)
+            if getattr(self, "restart_pending", None):
+                probs = self.restart_pending
+                self.restart_pending = None
+                self.ex = [{"role": "user", "content": (
+                    "FRESH START (earlier steps were cleared because the edits were not making progress). The "
+                    "CURRENT %s in PINNED STATE still has these problems:\n%s\n\nRewrite the COMPLETE program now "
+                    "with ONE write_file call: follow the ARGUMENT MAP exactly (options only via opts.get(\"--name\"), "
+                    "positionals only via pos) and fix every problem listed. Do not use edit_file for this." % (
+                        self.primary, "\n".join("- " + p for p in probs)))}]
+                self.want_rewrite = True
             desired, minimum = self._desired_tokens()
             msgs = self._build([system, task], desired)
             self._dump(msgs)
@@ -578,6 +667,8 @@ class DeepAgent:
 
     def _handle(self, reply):
         calls = reply.tool_calls
+        if any(c["name"] == "write_file" for c in calls):
+            self.want_rewrite = False
         if calls:
             self.no_tool_streak = 0
             tcs = []

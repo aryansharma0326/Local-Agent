@@ -104,6 +104,10 @@ def run_prog(variant, seed, e, crlf=False, bom=False):
             f.write(prompt)
         code, out, err, dt, calls = invoke(ws, prompt, e)
         results = prog_variants.grade(variant, ws)
+        keep = os.environ.get("LIVE_KEEP_DIR")
+        if keep and os.path.exists(os.path.join(ws, "tally.py")):
+            os.makedirs(keep, exist_ok=True)
+            shutil.copy(os.path.join(ws, "tally.py"), os.path.join(keep, "tally_%s_%d.py" % (variant, seed)))
         leftovers = sorted(set(os.listdir(ws)) - {"transactions.csv", "TASK.md", "tally.py"})
         return {"case": "PG variant=%s seed=%d%s%s" % (variant, seed, " crlf" if crlf else "", " bom" if bom else ""),
                 "ok": sum(1 for r in results if r[1]), "of": len(results), "per": dict((r[0], r[1]) for r in results),

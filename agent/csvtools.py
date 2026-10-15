@@ -143,9 +143,10 @@ class Table:
 
     def _serialize(self, fields, terminator):
         buf = io.StringIO(newline="")
-        csv.writer(buf, delimiter=self.delimiter, lineterminator="",
+        # lineterminator "\r\n" (not ""), so older Pythons also quote fields containing newlines
+        csv.writer(buf, delimiter=self.delimiter, lineterminator="\r\n",
                    quoting=csv.QUOTE_ALL if self.quote_all else csv.QUOTE_MINIMAL).writerow(fields)
-        return buf.getvalue() + terminator
+        return buf.getvalue()[:-2] + terminator
 
     # -- lookups
     @property
