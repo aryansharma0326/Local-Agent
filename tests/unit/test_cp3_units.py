@@ -68,6 +68,26 @@ class Verification(unittest.TestCase):
         self.assertEqual(t["worker_queue_depth"], "int")
         self.assertEqual(t["hold_queued_at"], "str")
 
+    def test_v04b_key_value_prefix_is_stripped(self):
+        # Live miss: the model wrote "sched=s-20410" / "upload=up-7731" instead of the bare IDs.
+        ws = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(ws, "logs"))
+            p = os.path.join(ws, "logs", "runner.log")
+            with open(p, "w") as f:
+                f.write("2026-09-20 02:10:00 sched=s-20410 tenant=acme-17 run=run-88c1 url=http://h/x\n")
+            keys = [("schedule_id", "the scheduler's ID (`sched=`) of the failed run"),
+                    ("tenant", "the tenant"), ("link", "the url")]
+            r = Report(Sandbox(ws), "REPORT.json", keys, 3, [p], [])
+            r.set({"schedule_id": "sched=s-20410", "tenant": "acme-17", "link": "http://h/x"})
+            self.assertEqual(r.values["schedule_id"], "s-20410")
+            self.assertEqual(r.values["tenant"], "acme-17")
+            self.assertEqual(r.values["link"], "http://h/x")   # no '=' -> untouched
+            r.set({"schedule_id": "sched=s-99999"})            # bare value not in the logs -> kept as written
+            self.assertEqual(r.values["schedule_id"], "sched=s-99999")
+        finally:
+            shutil.rmtree(ws, ignore_errors=True)
+
     def test_v04_report_validator(self):
         ws = tempfile.mkdtemp()
         try:

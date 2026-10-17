@@ -44,6 +44,13 @@ LONG_CONTENT_HINT = ("If the file content is long or repetitive, do not retype i
 READ_TOOLS = ("read_file", "read_files")
 CSV_READ_TOOLS = ("csv_aggregate", "csv_row_sum")
 CSV_WRITE_TOOLS = ("csv_update_cell", "csv_delete_rows")
+_MEMORY = re.compile(r"\b(remember|memori[sz]e|keep (that |this |it )?in mind|note that|take note|correction|"
+                     r"for this conversation|from now on|don't forget|do not forget)\b", re.I)
+# A request that asks for work on files or data (an action, not just a mention).
+_FILE_ACTION = re.compile(r"\b(create|write|save|store|delete|remove|erase|rename|copy|duplicate|read|open|"
+                          r"summari[sz]e|make|generate|produce|update|change|modify|edit|append|add|insert|"
+                          r"move|calculate|compute|count|total|sum|average|mean|list|show|find|search|touch)\b",
+                          re.I)
 _CREATE_VERBS = re.compile(r"\b(create|write|save|produce|generate|make|output|store|put|into)\b", re.I)
 
 SYSTEM_TEMPLATE = """You are a file-management agent working inside a sandboxed workspace directory. You act ONLY by calling tools. Every reply must be exactly ONE JSON object and nothing else:
@@ -69,7 +76,8 @@ How to handle each kind of request:
   * "Which row / who / what is the value" questions: read_file the CSV and name the row in your answer (e.g. the person's name), not only its id.
   For csv_update_cell and csv_delete_rows pass output_path ONLY when the user names a file to save the result as; otherwise omit it and the file itself is updated. Never invent a new file name. Report numbers in the finish message exactly as the tool gave them.
 - Follow-up requests: earlier turns of this conversation are listed before the request. Use them to resolve references like "it", "the table", "that file", "the same column" or "the average" (same file and column as the previous calculation). Instructions from earlier turns still apply. Recompute with the tools instead of reusing remembered numbers, because files may have changed.
-- Anything else: finish with status "error" explaining what is supported.
+- Conversation turns: when the user tells you anything about themselves (plans, preferences, facts, names, numbers, schedules) or an instruction to remember (with or without the word "remember"), corrects or replaces something said earlier, or asks about something from earlier in this conversation, no tool is needed. Finish with status "success" and a short acknowledgement (for example "Noted: your project code name is Cedar.") or the answer taken from the conversation. When a value was corrected or replaced, the most recent value is the current one. The conversation is saved automatically, so you can always remember it. Such turns are never "unsupported": do not refuse them and do not say you can only handle files.
+- Anything else that is not one of these: finish with status "error" explaining what is supported.
 
 Rules:
 - Paths are relative to the workspace with "/" separators. "file named X in the Y folder" means "Y/X". Use file names exactly as the user wrote them; never invent files. Use list_files if you are unsure where a named file is.
@@ -112,6 +120,8 @@ class Harness:
         self.delete_names = set()    # basenames the model tried to delete
         self.write_rejections = 0
         self.finish_rejections = 0
+        self.attempted = False       # the model called a tool (other than finish) this turn
+        self.convo_redirected = False
         self.last_error = None
         self.word_limit = guards.parse_word_limit(prompt)
         self.char_limit = guards.parse_char_limit(prompt)
@@ -247,6 +257,8 @@ class Harness:
                 continue
             invalid = 0
 
+            if name != "finish":
+                self.attempted = True
             if name == "finish":
                 verdict, a, b = self._finish(args)
                 if verdict == "done":
@@ -606,6 +618,16 @@ class Harness:
         """Return ("done", status, message) to stop, or ("retry", problem, None)
         to send the model one correction first."""
         status, message = args["status"], args.get("message", "").strip()
+        if (status == "error" and not self.attempted and self.mutation is None and not self.read_paths
+                and not self._about_files() and not self.convo_redirected):
+            # The request asks for no file work and nothing was tried: an "error" here is the model
+            # refusing an ordinary conversation turn (a statement, a correction, a question about
+            # the conversation). Send it back once.
+            self.convo_redirected = True
+            return "retry", ("this is a conversation turn, not a file task, and it is supported: if the user "
+                             "told you something, acknowledge it (status \"success\", e.g. \"Noted: ...\"); if "
+                             "they asked about something said earlier in this conversation, answer it from the "
+                             "conversation; if the answer was never given, say so with status \"success\""), None
         if status == "error" and getattr(self, "injection_blocked", False) and self.finish_rejections < 1 \
                 and (self._pending_output() or (self.read_paths and self.mutation is None)):
             self.finish_rejections += 1
@@ -623,7 +645,7 @@ class Harness:
             problem = ("nobody can answer questions; do not ask the user anything. Use the tools to "
                        "complete the task, then finish with the result")
         elif (self.mutation is None and not self.read_paths and not self.history
-              and not session._STANDING.search(self.prompt)):
+              and self._about_files()):
             problem = ("you reported success but no operation was performed. Call the needed tool, or "
                        "finish with status \"error\" if the task cannot be done")
         elif pending:
@@ -644,7 +666,7 @@ class Harness:
         if self.finish_rejections <= 1:
             return "retry", problem, None
         if (self.mutation is None and not self.read_paths and not self.history
-                and not session._STANDING.search(self.prompt)):
+                and self._about_files()):
             return "done", "error", self.last_error or "The task could not be completed."
         if not message:
             return "done", "error", "The model did not provide an answer."
@@ -680,6 +702,20 @@ class Harness:
         if self.computed and not any(value in plain for value, _ in self.computed):
             message = (message + " " if message else "") + "[" + self.computed[-1][1] + "]"
         return message
+
+    def _about_files(self):
+        """Does this request ask for work on files? A turn that only states a fact,
+        corrects one, or chats legitimately needs no tool, so a no-operation
+        "success" is refused only for real file requests."""
+        if self.attempted:
+            return True   # the model itself tried file work this turn: a no-op "success" is not credible
+        if session._STANDING.search(self.prompt) or _MEMORY.search(self.prompt):
+            return False  # "remember ...", "correction: ...", "keep in mind": a statement to keep
+        if _FILE_ACTION.search(self.prompt):
+            return True   # asks for something to be done: create, delete, read, total, ...
+        # A question about a named file ("What does notes.txt say?") needs the file read;
+        # a statement that merely mentions one ("The file I care about is sales.csv.") does not.
+        return bool(guards.prompt_paths(self.prompt)) and bool(_QUESTION.search(self.prompt))
 
     def _pending_output(self):
         """A file the request seems to ask us to produce that does not exist yet."""

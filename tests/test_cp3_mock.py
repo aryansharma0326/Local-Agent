@@ -8,6 +8,7 @@ Usage: python3 tests/test_cp3_mock.py
 
 import json
 import os
+import re
 import sys
 
 sys.dont_write_bytecode = True
@@ -278,6 +279,205 @@ def t_generality_fix_failing_script():
     expect("must not be modified" in obs, "test edit not refused")
     expect("unittest" in obs, "tests were not run by the harness check")
 
+
+
+BROKEN_REF = REF.replace("import ", "import zzz_no_such_module\nimport ", 1)
+
+
+def t_text_replies_do_not_abandon_a_broken_program():
+    # Live failure: after the first draft failed the harness checks, three replies without a tool call made
+    # the loop stop ("repeated actions") at 42 s of 285 s with the program still broken.
+    ws, prompt = prog_ws()
+    r = go(ws, prompt, [tc("write_file", path="tally.py", content=BROKEN_REF),
+                        {"content": "I will fix the import problem now."},
+                        {"content": "The program has an import error that I need to fix."},
+                        {"content": "Let me correct the module import."},
+                        tc("write_file", path="tally.py", content=REF),
+                        tc("finish", message="Done.")] + [tc("finish", message="Done.")] * 4)
+    expect(ws.read("tally.py") == REF, "the broken program was not fixed")
+    expect(r.status == "success", r.stdout)
+    obs = json.dumps([q["body"]["messages"] for q in SERVER.requests])
+    expect("Plain text does nothing" in obs, "no firm directive after text-only replies")
+
+
+def t_text_replies_are_bounded():
+    # Endless text-only replies must still end the run (at most 6 in a row), leaving the program intact.
+    ws, prompt = prog_ws()
+    r = go(ws, prompt, [tc("write_file", path="tally.py", content=REF)] + [{"content": "All good."}] * 12)
+    expect(ws.read("tally.py") == REF, "program damaged")
+    expect(len(SERVER.requests) <= 8, "text-only replies not bounded (%d calls)" % len(SERVER.requests))
+
+
+MINI_TALLY = """import csv, sys
+from decimal import Decimal, ROUND_HALF_UP
+from functools import reduce
+
+
+def parse(args):
+    cmd, opts, pos, i = args[0], {}, [], 1
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--"):
+            OPTION_RULE
+        else:
+            pos.append(a); i += 1
+    return cmd, opts, pos
+
+
+def money(d):
+    return format(d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "f")
+
+
+cmd, opts, pos = parse(sys.argv[1:])
+rows = []
+with open(opts.get("--file", "transactions.csv"), newline="") as f:
+    r = csv.reader(f); next(r, None)
+    for row in r:
+        try:
+            rows.append((row[0], row[2].strip().lower(), Decimal(row[3])))
+        except Exception:
+            pass
+cat = opts.get("--category")
+amounts = [a for _, c, a in rows if cat is None or c == str(cat).lower()]
+if cmd == "count":
+    print(len(rows))
+elif cmd == "total":
+    print(money(SUM_RULE))
+elif cmd == "top":
+    tot = {}
+    for _, c, a in rows:
+        tot[c] = tot.get(c, Decimal(0)) + a
+    for c, a in sorted(tot.items(), key=lambda kv: (-kv[1], kv[0]))[:int(pos[0])]:
+        print("%s\\t%s" % (c, money(a)))
+elif cmd == "range":
+    sel = [a for d, _, a in rows if opts["--from"] <= d <= opts["--to"]]
+    print("count=%d total=%s" % (len(sel), money(sum(sel, Decimal(0)))))
+"""
+GOOD_OPTS = 'opts[a] = args[i + 1]; i += 2'
+BAD_OPTS = ("if pos:  # bug: an option after a positional argument is taken as a bare flag\n"
+            "                opts[a] = True; i += 1\n"
+            "            else:\n"
+            "                opts[a] = args[i + 1]; i += 2")
+GOOD_SUM = 'sum(amounts, Decimal(0))'
+BAD_SUM = 'reduce(lambda x, y: x + y, amounts)'
+
+
+def mini(opts_rule, sum_rule):
+    return MINI_TALLY.replace("OPTION_RULE", opts_rule).replace("SUM_RULE", sum_rule)
+
+
+def _observations():
+    return json.dumps([q["body"]["messages"] for q in SERVER.requests])
+
+
+def t_probe_file_option_after_positional():
+    # Live failure (wordstat): `find two --file mini.txt` misread --file as a flag. The harness must compare
+    # each example with the default data file passed explicitly AFTER the arguments.
+    ws, prompt = prog_ws()
+    good = mini(GOOD_OPTS, GOOD_SUM)
+    r = go(ws, prompt, [tc("write_file", path="tally.py", content=mini(BAD_OPTS, GOOD_SUM)),
+                        tc("write_file", path="tally.py", content=good)] + [tc("finish", message="Done.")] * 5)
+    expect("must work in any position" in _observations(), "option-placement bug not reported")
+    expect(ws.read("tally.py") == good, "final program wrong")
+
+
+def t_probe_correct_program_has_no_placement_flags():
+    ws, prompt = prog_ws()
+    good = mini(GOOD_OPTS, GOOD_SUM)
+    go(ws, prompt, [tc("write_file", path="tally.py", content=good)] + [tc("finish", message="Done.")] * 5)
+    obs = _observations()
+    expect("must work in any position" not in obs, "false option-placement flag on a correct program")
+
+
+
+WORDS_PROMPT = """# Task: implement `wordstat.py`
+
+Write a command-line tool `wordstat.py` (Python 3, standard library only) in the current directory.
+
+## Invocation
+
+```
+python3 wordstat.py <command> [arguments] [--file PATH]
+```
+
+* `--file PATH` selects the text file. Default: `book.txt`. Options may appear anywhere after the command.
+
+## Requirements
+
+1. **`lines`** - `python3 wordstat.py lines` prints the number of lines, e.g. `120`.
+2. **`find WORD`** - `python3 wordstat.py find WORD` prints the 1-based line numbers containing WORD, comma-separated.
+"""
+WORDS_PROG = """import sys
+
+
+def parse(args):
+    cmd, opts, pos, i = args[0], {}, [], 1
+    while i < len(args):
+        a = args[i]
+        if a.startswith("--"):
+            OPTION_RULE
+        else:
+            pos.append(a); i += 1
+    return cmd, opts, pos
+
+
+cmd, opts, pos = parse(sys.argv[1:])
+lines = open(opts.get("--file", "book.txt"), encoding="utf-8").read().splitlines()
+if cmd == "lines":
+    print(len(lines))
+elif cmd == "find":
+    hits = [str(n + 1) for n, l in enumerate(lines) if pos[0].lower() in l.lower().split()]
+    print(",".join(hits) or "none")
+"""
+
+
+def t_probe_default_text_file_placement():
+    # Live miss (wordstat): the default input is a plain text file, which the data profiler does not cover;
+    # the placement probe must still compare `find WORD` with `find WORD --file book.txt`.
+    ws = Workspace({"book.txt": "the cat\\na dog\\nthe end\\n", "TASK.md": WORDS_PROMPT})
+    good = WORDS_PROG.replace("OPTION_RULE", GOOD_OPTS)
+    r = go(ws, WORDS_PROMPT, [tc("write_file", path="wordstat.py", content=WORDS_PROG.replace("OPTION_RULE", BAD_OPTS)),
+                              tc("write_file", path="wordstat.py", content=good)] + [tc("finish", message="Done.")] * 5)
+    expect("must work in any position" in _observations(), "placement bug with a text default file not reported")
+    expect(ws.read("wordstat.py") == good, "final program wrong")
+
+
+
+def t_time_short_warning_when_rewrite_cannot_fit():
+    # Live miss: at ~220 s the model started a full rewrite with only 512 output tokens left; it was cut off.
+    ws, prompt = prog_ws()
+    go(ws, prompt, [tc("write_file", path="tally.py", content=REF)] + [tc("finish", message="Done.")] * 5,
+       env={"AGENT_TIME_BUDGET": "75"})
+    sent = json.dumps([q["body"]["messages"][-1].get("content") for q in SERVER.requests[1:]])
+    expect("TIME IS SHORT" in sent, "no warning although a full rewrite no longer fits the time left")
+
+
+def t_no_time_short_warning_with_plenty_of_time():
+    ws, prompt = prog_ws()
+    go(ws, prompt, [tc("write_file", path="tally.py", content=REF)] + [tc("finish", message="Done.")] * 5)
+    sent = json.dumps([q["body"]["messages"][-1].get("content") for q in SERVER.requests[1:]])
+    expect("TIME IS SHORT" not in sent, "warning shown with plenty of time")
+
+
+
+
+
+def t_probe_case_insensitive_category():
+    # Live miss: `total --category TRAVEL` was wrong although the task says the comparison is case-insensitive.
+    ws, prompt = prog_ws()
+    good = mini(GOOD_OPTS, GOOD_SUM)
+    bad = good.replace("c == str(cat).lower()", "c == str(cat)")   # compares the raw (upper-case) value
+    r = go(ws, prompt, [tc("write_file", path="tally.py", content=bad),
+                        tc("write_file", path="tally.py", content=good)] + [tc("finish", message="Done.")] * 5)
+    expect("letter case must not change the result" in _observations(), "case-sensitivity bug not reported")
+    expect(ws.read("tally.py") == good, "final program wrong")
+
+
+def t_probe_case_variants_quiet_on_correct_program():
+    ws, prompt = prog_ws()
+    go(ws, prompt, [tc("write_file", path="tally.py", content=mini(GOOD_OPTS, GOOD_SUM))]
+       + [tc("finish", message="Done.")] * 5)
+    expect("letter case must not change the result" not in _observations(), "false case-sensitivity flag")
 
 if __name__ == "__main__":
     runner = Runner()

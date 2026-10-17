@@ -737,6 +737,115 @@ def t_tool_and_arg_aliases_for_csv():
     expect(raw(ws, "b/sales.csv") == SALES.encode(), r.stdout)
 
 
+# ======================================================================
+# CONVERSATION-ONLY TURNS (HW1-2 grading report: these four cases failed)
+# A turn that only states a fact, corrects one, or asks about the conversation needs no file operation.
+# ======================================================================
+def t_grader_memory_recall():
+    ws = Workspace({"unrelated/sentinel.bin": b"\x00\x01"})
+    r1 = turn(ws, "My project code name is Cedar. Remember it for this conversation.", 6101,
+              [ok("Noted: your project code name is Cedar.")])
+    expect(r1.status == "success" and r1.code == 0, "statement turn failed: " + r1.stdout)
+    r2 = turn(ws, "What is my project code name?", 6101, [ok("Your project code name is Cedar.")])
+    expect(r2.status == "success" and "Cedar" in r2.message, r2.stdout)
+    expect("My project code name is Cedar" in first_message(), "turn 1 missing from the history")
+
+
+def t_grader_memory_correction():
+    ws = Workspace({})
+    for prompt, reply in (("My preferred drink is tea. Remember that.", "Noted: tea."),
+                          ("Correction: my preferred drink is coffee now, replacing tea.", "Updated: coffee.")):
+        r = turn(ws, prompt, 6303, [ok(reply)])
+        expect(r.status == "success" and r.code == 0, "%r failed: %s" % (prompt, r.stdout))
+    r = turn(ws, "What is my current preferred drink?", 6303, [ok("Your current preferred drink is coffee.")])
+    expect(r.status == "success" and "coffee" in r.message, r.stdout)
+
+
+def t_grader_session_separation():
+    ws = Workspace({})
+    for sid, name in ((6404, "Harbor"), (6405, "Meadow")):
+        r = turn(ws, "My project code name is %s. Remember it for this conversation." % name, sid, [ok("Noted.")])
+        expect(r.status == "success", r.stdout)
+    turn(ws, "What is my project code name?", 6404, [ok("Harbor")])
+    expect("Harbor" in first_message() and "Meadow" not in first_message(), "6404 saw 6405's history")
+    turn(ws, "What is my project code name?", 6405, [ok("Meadow")])
+    expect("Meadow" in first_message() and "Harbor" not in first_message(), "6405 saw 6404's history")
+
+
+def t_grader_session_separation_after_update():
+    ws = Workspace({})
+    for sid, prompt in ((6506, "My meeting day is Tuesday. Remember it for this conversation."),
+                        (6507, "My meeting day is Wednesday. Remember it for this conversation."),
+                        (6506, "My meeting has moved to Friday. Replace the earlier day with Friday.")):
+        r = turn(ws, prompt, sid, [ok("Noted.")])
+        expect(r.status == "success" and r.code == 0, "%r failed: %s" % (prompt, r.stdout))
+    turn(ws, "What is my current meeting day?", 6507, [ok("Wednesday")])
+    expect("Wednesday" in first_message() and "Friday" not in first_message(), "6507 history wrong")
+
+
+def t_first_turn_statements_without_remember_succeed():
+    # The grader's hidden wording may not say "remember": a plain statement must still be accepted.
+    for prompt in ("My favourite colour is green.", "Hello! My name is Sam.", "My budget is 500 dollars.",
+                   "Just so you know, I live in Boston.", "The file I care about is sales.csv."):
+        ws = Workspace({"sales.csv": "a\n1\n"})
+        r = turn(ws, prompt, 7001, [ok("Noted.")])
+        expect(r.status == "success" and r.code == 0, "%r refused: %s" % (prompt, r.stdout))
+
+
+def t_fake_success_on_file_requests_is_still_refused():
+    ws = Workspace({"notes.txt": "secret: 42"})
+    for prompt in ("Create notes2.txt containing hi", "Make a file called notes with the text hi",
+                   "Delete the old folder", "Summarize the report", "What does notes.txt say?"):
+        r = turn(ws, prompt, None, [ok("Done."), ok("Done.")])
+        expect(r.status == "error" and r.code == 1, "%r: fake success accepted: %s" % (prompt, r.stdout))
+
+
+def t_failed_tool_then_fake_success_is_refused():
+    ws = Workspace({})
+    r = turn(ws, "Use write_file on ../escape.txt", None,
+             [call("write_file", path="../escape.txt", content="x"), ok("done"), ok("done")])
+    expect(r.status == "error", "fake success after a failed tool call: " + r.stdout)
+
+
+def t_conversation_turn_creates_no_files():
+    ws = Workspace({"unrelated/sentinel.bin": b"\x00"})
+    before = ws.snapshot()
+    turn(ws, "My favourite colour is green. Remember it.", 42, [ok("Noted: green.")])
+    expect(ws.snapshot() == before, "a conversation-only turn changed the workspace")
+
+
+def t_refused_statement_is_redirected():
+    # Live failure: "I'm planning a trip to Lisbon in May." was answered with an "unsupported" error.
+    ws = Workspace(dict({"unrelated/sentinel.bin": b"\x00"}))
+    r = turn(ws, "I'm planning a trip to Lisbon in May.", 7101,
+             [call("finish", status="error", message="I cannot assist with planning trips."),
+              ok("Noted: you are planning a trip to Lisbon in May.")])
+    expect(r.status == "success" and r.code == 0 and "Lisbon" in r.message, r.stdout)
+    expect(saw("this is a conversation turn"), "refusal was not redirected")
+
+
+def t_refusal_redirect_happens_only_once():
+    ws = Workspace({})
+    r = turn(ws, "I'm planning a trip to Lisbon in May.", 7102,
+             [call("finish", status="error", message="no"), call("finish", status="error", message="still no")])
+    expect(r.status == "error" and len(SERVER.requests) == 2, "made %d calls: %s" % (len(SERVER.requests), r.stdout))
+
+
+def t_file_task_errors_are_not_redirected():
+    ws = Workspace({})
+    r = turn(ws, "Delete gone.txt", 7103, [call("delete_file", path="gone.txt"),
+                                          call("finish", status="error", message="Could not find gone.txt.")])
+    expect(r.status == "error" and "gone.txt" in r.message, r.stdout)
+    expect(not saw("this is a conversation turn"), "a real file-task error was redirected")
+
+
+def t_system_prompt_has_conversation_rule():
+    ws = Workspace({})
+    turn(ws, "My name is Sam.", 43, [ok("Hi Sam.")])
+    system = SERVER.requests[0]["body"]["messages"][0]["content"]
+    expect("Conversation turns:" in system and "no tool is needed" in system, "conversation rule missing")
+
+
 def main():
     names = sys.argv[1:]
     runner = Runner()

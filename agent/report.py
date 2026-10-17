@@ -154,6 +154,12 @@ class Report:
                 v = v.strip()
                 if len(v) >= 2 and v[0] == v[-1] and v[0] in "`'\"":
                     v = v[1:-1]
+                # "sched=s-20410" -> "s-20410": the task asks for the identifier, not the log's key=value token
+                # (its example shape shows bare values). Only when the bare value is itself in the logs.
+                m = re.fullmatch(r"([A-Za-z_][\w.-]{0,30})=(\S+)", v)
+                if m and self.in_evidence(m.group(2)) and not re.search(r"key=value|key/value|pair",
+                                                                       self.desc.get(key, ""), re.I):
+                    v = m.group(2)
             self.values[key] = v
             self.set_keys.add(key)
             lines.append("%s = %s: %s" % (key, json.dumps(v, ensure_ascii=False), self.check(key)))

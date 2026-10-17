@@ -302,6 +302,43 @@ class DeepAgent:
                 out.append(" ".join(base[:3] + ["--file", "no_such_file.csv"]))
         return out[:8]
 
+    def _default_data_file(self):
+        """The data file the task names as the default for --file, if it is in the workspace."""
+        if not re.search(r"--file\b", self.prompt):
+            return None
+        named = re.findall(r"[Dd]efault[^\n`]{0,40}`([\w./-]+\.\w+)`", self.prompt)
+        for rel in list(self.facts) + [n for n in named if n not in self.facts]:
+            base = os.path.basename(rel)
+            if re.search(r"[Dd]efault[^\n]{0,80}%s" % re.escape(base), self.prompt) and os.path.isfile(
+                    os.path.join(self.root, rel)):
+                return rel
+        return None
+
+    def _case_variants(self, cmd):
+        """Same command with the value of a --option in lower case and in Capitalized case - only when the
+        task states that comparisons are case-insensitive (a stated requirement, never a guess)."""
+        if not re.search(r"case[- ]insensitive", self.prompt, re.I):
+            return []
+        toks = cmd.split()
+        out = []
+        for i in range(2, len(toks) - 1):
+            val = toks[i + 1]
+            if toks[i].startswith("--") and re.fullmatch(r"[A-Za-z][A-Za-z ]*", val) and len(val) > 1:
+                for v in (val.lower(), val.capitalize(), val.upper()):
+                    if v != val:
+                        alt = " ".join(toks[:i + 1] + [v] + toks[i + 2:])
+                        if alt not in out:
+                            out.append(alt)
+                break
+        return out[:2]
+
+    def _with_default_file(self, cmd):
+        """`cmd --file <default data file>`: must behave exactly like `cmd` (options may appear anywhere)."""
+        default = self._default_data_file()
+        if not default or "--file" in cmd or len(cmd.split()) < 3:
+            return None
+        return "%s --file %s" % (cmd, default)
+
     def _fill(self, cmd):
         """Replace placeholders in an example command with values from the data."""
         data_rel = next(iter(self.facts), None)
@@ -405,6 +442,21 @@ class DeepAgent:
                     flags.append("`%s` printed %r (exit %s) but the same command with options in another position "
                                  "`%s` printed %r (exit %s); options may appear anywhere" % (
                                      c, out.strip()[:80], code, alt, o2.strip()[:80], c2))
+            for alt in self._case_variants(c):
+                c4, o4, e4, _, _ = run_process(alt, self.root, 20, self.tools.env)
+                if (c4, o4) != (code, out):
+                    flags.append("`%s` printed %r (exit %s) but `%s` printed %r (exit %s); the task says the comparison "
+                                 "is case-insensitive, so letter case must not change the result" % (
+                                     c, out.strip()[:80], code, alt, o4.strip()[:80], c4))
+            explicit = self._with_default_file(c)
+            if explicit:
+                c3, o3, e3, _, _ = run_process(explicit, self.root, 20, self.tools.env)
+                if (c3, o3) != (code, out):
+                    flags.append("`%s` printed %r (exit %s) but `%s` - the same command with the DEFAULT data file "
+                                 "given explicitly after the arguments - printed %r (exit %s)%s; `--file PATH` must "
+                                 "work in any position after the command" % (
+                                     c, out.strip()[:80], code, explicit, o3.strip()[:80], c3,
+                                     (" with stderr: " + e3.strip().split("\n")[-1][:160]) if e3.strip() else ""))
             o = out.rstrip("\n").split("\n")
             shown = "\n".join(o[:12]) + ("\n...(%d more lines)" % (len(o) - 12) if len(o) > 12 else "")
             item = "$ %s\n  exit=%s %.2fs%s\n  stdout: %s" % (c, code, dt, " TIMEOUT" if timed_out else "",
@@ -731,9 +783,18 @@ class DeepAgent:
                        self.primary) + self.tools.call("write_file", {"path": self.primary, "content": big[0] + "\n"})
         if obs is None:
             self.no_tool_streak += 1
+            log("reply without a tool call (%d in a row): %s" % (self.no_tool_streak, content[:300].replace("\n", " | ")))
+            open_problems = self._deliverable_problems(strict=False) or list(getattr(self, "last_problems", None) or [])
             if reply.truncated and "```" in content:
                 obs = ("Your reply was cut off by the output limit. Write the file in parts: write_file with the "
                        "first part, then append_file with the rest.")
+            elif self.no_tool_streak >= 3 and open_problems and self.no_tool_streak < 6 and config.remaining() > 60:
+                # The deliverable is still broken and there is time: insist instead of giving up.
+                obs = ("Plain text does nothing - only tool calls change files. The deliverable still has problems:\n"
+                       + truncate("\n".join(open_problems[:3]), 1200) +
+                       "\nCall edit_file now to fix the first problem (copy the exact old text from the file; if it "
+                       "occurs more than once, include more surrounding lines or pass count), or rewrite the whole "
+                       "file with write_file.")
             elif self.no_tool_streak >= 3:
                 self.force_wrap = True
                 obs = "No tool call again."
@@ -838,6 +899,17 @@ class DeepAgent:
                                                                           "\n".join(outline[:80])))
         left = "time left %.0fs, model calls left %d" % (config.remaining(), config.CALL_CAP - self.llm.calls_used)
         parts.append(left)
+        if self.kind == "programming" and self.primary and os.path.isfile(os.path.join(self.root, self.primary)):
+            # Late in the run the output limit shrinks with the time left; a full rewrite that does not fit is
+            # cut off and wasted (seen live at ~220 s: a 512-token limit vs a 1,100-token rewrite).
+            budget, _ = self._desired_tokens()
+            with open(os.path.join(self.root, self.primary), "r", encoding="utf-8", errors="replace") as f:
+                need = len(f.read()) // 3 + 200
+            if budget < need:
+                parts.append("TIME IS SHORT: only about %d output tokens fit in the time left, but rewriting %s "
+                             "needs about %d. Do NOT rewrite the whole file now (it would be cut off and lost): "
+                             "fix the single most important problem with one small edit_file, or call finish."
+                             % (budget, self.primary, need))
         return "\n\n[PINNED STATE]\n" + "\n\n".join(parts)
 
     def _build(self, base, desired):
