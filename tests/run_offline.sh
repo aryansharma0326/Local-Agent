@@ -13,7 +13,7 @@ PY="${PYTHON:-python3}"
 LOGDIR="$(mktemp -d "${TMPDIR:-/tmp}/hw1_offline.XXXXXX")"
 START=$(date +%s)
 
-UNIT="tests/unit/test_static.py tests/unit/test_core.py tests/unit/test_sessions_store.py tests/unit/test_cp3_units.py tests/test_sandbox.py tests/test_verify.py tests/test_csv.py"
+UNIT="tests/unit/test_static.py tests/unit/test_core.py tests/unit/test_sessions_store.py tests/unit/test_cp3_units.py tests/unit/test_adversarial_fixes.py tests/test_sandbox.py tests/test_verify.py tests/test_csv.py"
 E2E="tests/test_offline.py tests/test_edge_cases.py tests/test_sessions.py tests/test_cp3_mock.py tests/test_contract.py"
 
 pids=""

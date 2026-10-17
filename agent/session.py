@@ -329,10 +329,15 @@ def render(turns, context=None):
     RECENT_TURNS verbatim, then the structured working context."""
     lines = []
     n = len(turns)
+    budget = 12000  # characters for the compacted (older) turns together
     for i, t in enumerate(turns, 1):
         if i <= n - RECENT_TURNS:
+            # A turn without file actions is usually the user telling us facts: keep more of it, or a detail
+            # past the first 200 characters is lost for good. File turns are summarised by the context.
+            keep = 600 if not t.get("actions") and budget > 0 else 200
+            budget -= min(len(t.get("prompt", "")), keep) + 200
             lines.append("[Turn %d] User: %s -> (%s) %s" % (
-                i, _clip(t.get("prompt", ""), 200), t.get("status", "?"), _clip(t.get("message", ""), 200)))
+                i, _clip(t.get("prompt", ""), keep), t.get("status", "?"), _clip(t.get("message", ""), 200)))
             continue
         lines.append("[Turn %d] User: %s" % (i, t.get("prompt", "")))
         for a in t.get("actions", []):
@@ -352,6 +357,9 @@ def render(turns, context=None):
         if c.get("result_file"):
             bits.append("result saved as %s" % c["result_file"])
         extra.append("Last CSV operation: %s (%s)" % (c.get("last_operation", c.get("operation")), "; ".join(bits)))
+        if c.get("result_file") and c.get("path") and c["result_file"] != c["path"]:
+            extra.append("A follow-up that says 'that file', 'the new file', 'the result' or 'it' means %s (the "
+                         "file the last operation saved), not its source %s." % (c["result_file"], c["path"]))
     if ctx.get("outputs_created"):
         extra.append("Files created in this session: %s" % ", ".join(ctx["outputs_created"][-8:]))
     if ctx.get("standing_instructions"):

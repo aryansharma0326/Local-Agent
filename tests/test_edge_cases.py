@@ -437,7 +437,31 @@ def t_read_huge_file_truncated_not_crashing():
     big = "filler line\n" * 20000 + "SECRET=42\n"
     ws, r, _ = go({"huge.txt": big}, "According to huge.txt what is SECRET?",
                   [call("read_file", path="huge.txt"), ok("Not visible.")])
-    expect(r.status == "success" and saw("[... truncated ...]"), r.stdout)
+    expect(r.status == "success" and saw("NOT SHOWN"), r.stdout)
+
+
+def t_read_invented_total_is_pushed_back():
+    # RQ-A08: the model added a "damaged" row (12 + 3 = 15) in its head; 15 is in no file.
+    table = ("| Item | Color | In stock |\n|---|---|---|\n| Notebook | Blue | 12 |\n| Notebook (damaged) | Blue | 3 |\n")
+    ws, r, _ = go({"inventory.txt": table}, "Read inventory.txt. How many blue notebooks are currently in stock?",
+                  [call("read_file", path="inventory.txt"), ok("There are 15 blue notebooks in stock."),
+                   ok("There are 12 blue notebooks in stock.")])
+    expect(r.status == "success" and "12" in r.message and saw("appears nowhere"), r.stdout)
+
+
+def t_read_calculated_total_is_allowed():
+    ws, r, _ = go({"inv.txt": "Blue notebooks: 12\nRed notebooks: 7\n"},
+                  "Read inv.txt. How many notebooks are there in total?",
+                  [call("read_file", path="inv.txt"), call("calculate", expression="12 + 7"),
+                   ok("There are 19 notebooks in total.")])
+    expect(r.status == "success" and "19" in r.message and not saw("appears nowhere"), r.stdout)
+
+
+def t_read_value_from_file_not_pushed_back():
+    ws, r, _ = go({"schedule.txt": "Final presentation: December 12, 2026\nRoom 204\n"},
+                  "According to schedule.txt, what date is the final presentation?",
+                  [call("read_file", path="schedule.txt"), ok("The final presentation is on December 12, 2026.")])
+    expect(r.status == "success" and not saw("appears nowhere"), r.stdout)
 
 
 def t_read_fifo_does_not_hang():

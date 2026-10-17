@@ -87,6 +87,8 @@ def classify(prompt, root):
         debug += 2 if json_deliv else 0
     if json_deliv and debug >= 4 and (cp3 or _has_logs(root) or "REPORT.json" in text) and debug >= prog:
         return "debugging"
-    if code_deliv and prog >= 3 and not (literal and not cp3 and prog < 5):
+    # A literal create ("Create notes.txt containing: implement parser.py ...") is file work whatever its
+    # content says; a real programming task arrives with its TASK.md (cp3) or without literal-content wording.
+    if code_deliv and prog >= 3 and not (literal and not cp3):
         return "programming"
     return "simple"

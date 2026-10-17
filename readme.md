@@ -181,6 +181,18 @@ Every request sends `"chat_template_kwargs": {"enable_thinking": false}`. Thinki
 | D-14 | CP3 programming: the harness runs only the task's own example commands plus generic CLI property checks (option order, unknown values, missing file); it never contains task-specific answers. |
 | D-15 | CP3 debugging: report values are taken verbatim from the logs; integers are coerced from numeric strings; keys not in the task are rejected. |
 | D-16 | The CP3 per-request timeout may reach 240 s for a whole-program write (the spec's 120 s cap would cut a ~3k-token write at 25 tokens/s); every wait still respects the run deadline. |
+| D-17 | A turn that only states something is acknowledged, never refused. A statement here means: no question, no request phrasing, no file named, and no sentence or clause that opens with an imperative. Example: "My total budget is 1200 euros. Don't change anything yet." This holds even when the statement contains a verb such as total, list, read or change. |
+| D-18 | CSV comparisons: blank, `N/A` and other text cells never satisfy a numeric or date comparison. Dates in common formats (ISO, `M/D/YYYY`, `March 1, 2026`) are compared as dates. Row IDs match exactly first, so `007` never also selects `7`. |
+| D-19 | A run that ends in an error restores any file it deleted, so the workspace is never left half-changed. |
+| D-20 | Long files are read in parts (`read_file` with `offset`). An answer saying something is "not in the file" is pushed back while part of the file is still unread. |
+| D-21 | Summaries: a word count that describes the sources ("the notes are each under 40 words") is not a limit on the output, and "50 to 80 words" allows up to 80. "One bullet per source file" means one bullet for each named source. When the prompt asks for a total, a sum of source numbers counts as supported. |
+| D-22 | CP3: report keys ending in `_code` take the logged value's own type unless they are status or exit codes; `*_cents` keys are integers. A root-cause value is checked against the innermost `Caused by:` and lock-holder classes of the stack traces linked to the request. Before accepting `finish` with time to spare, the programming loop has the model test each numbered requirement itself. |
+| D-23 | Read answers: an answer is pushed back once when it states a multi-digit number that appears nowhere it could have come from. Those sources are the files read, the question, the conversation and tool results such as `calculate`. This catches totals added in the model's head (12 + 3 damaged = 15). Single digits are exempt, and after one pushback the answer is accepted. |
+| D-24 | A verb used as a noun at the start of a statement ("Read receipts are on", "List prices went up", "Check-in time is 3 PM") is not a command. A first-person statement may name a file ("I store my recipes in recipes.txt") and is still only acknowledged. "X needs to be deleted" counts as a request. |
+| D-25 | Per-item word limits are recognised in every word order ("each bullet under 25 words", "15 words each", "3 sentences, each under 20 words") and are checked per line or per sentence. "Between N and M words" is a range, and its minimum is enforced. |
+| D-26 | Older session turns without file actions keep up to 600 characters instead of 200, within a 12,000-character budget, so facts stated early are not cut off. |
+| D-27 | `csv_delete_rows` takes `values` (any of several) and `and_column/and_operator/and_value` (both conditions). A literal "x or y" that matches nothing is split into separate values. Slash dates follow the column's own day/month order. Removing no rows or every row adds a warning to the result. |
+| D-28 | CP3: the root-cause check blames the most recent linked stack trace: the lock holder, or the first non-JDK/framework frame under the innermost cause. `*_number` keys keep the logged value's type, and an integer that the logs only show inside an identifier is flagged. An identical tool call is refused from the 4th repeat on, a repeated `grep` shows more matches, and a report with no findings ends with status error. The self-review shows the task commands' current outputs. |
 
 ## Tests
 
@@ -193,6 +205,7 @@ Every request sends `"chat_template_kwargs": {"enable_thinking": false}`. Thinki
 | `python3 tests/live_cp3.py debug --seeds 1,2 --scenarios basic,retry,decoy_ids,decoy_class` | yes | CP3 debugging generator runs, per-key accuracy | about 1 min per case |
 | `python3 tests/live_cp3.py prog --variants A,B,C --seeds 1` | yes | CP3 programming spec variants, graded per requirement | 1–4 min per case |
 | `bash tests/run_live.sh --reps 5 --only cp1,cp2,cp3` | yes | the release-gate catalog with repetitions (`--backend openrouter\|local`, `--delay S`) | long |
+| `python3 tests/adversarial/runner.py --submission . --label NAME [--only cp2,CX-12]` | yes | adversarial grader-style suite: 111 cases including the four failed hidden CP2 cases, independent CP3 log/spec generators, and reruns of failures; `make_report.py` writes `REPORT.md` | about 40 min |
 
 The live tests read the key from `$QWEN_API_KEY` or `~/.qwen_key`. The key is never stored in the repository,
 and a static test scans for it.

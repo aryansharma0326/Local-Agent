@@ -137,6 +137,8 @@ def run(prompt, session_id=None):
             status, message = agent.run()
         except AgentError as e:
             status, message = "error", str(e) or "The request could not be completed."
+            if kind not in ("programming", "debugging") and hasattr(sandbox, "undo_deletes"):
+                sandbox.undo_deletes()  # a failed run never leaves a half-applied delete behind
         actions = getattr(agent, "actions", [])
     finally:
         log("calls_used=%d (total attempts %d)" % (llm.calls_used, llm.attempts))

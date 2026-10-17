@@ -54,8 +54,9 @@ _INTERNAL_KEYS = ("aliases", "scalar")  # schema keys used by validation only
 
 
 class ToolResult:
-    def __init__(self, obs, read=(), wrote=None, deleted=None, computed=None):
+    def __init__(self, obs, read=(), wrote=None, deleted=None, computed=None, unread=None):
         self.obs = obs
+        self.unread = dict(unread or {})  # relpath -> offset where the unshown rest of a long file starts
         self.read = list(read)      # relative paths whose contents were read
         self.wrote = wrote          # (raw_path, content) for a created/overwritten file
         self.deleted = deleted      # raw_path of a deleted file
@@ -142,8 +143,22 @@ def build_tools(sandbox):
         return rel, text
 
     def read_file(args):
-        rel, text = _read(args["path"])
-        return ToolResult(label_file(rel, text), read=[rel])
+        rel, text = sandbox.read_file(args["path"])
+        try:
+            start = max(0, int(str(args.get("offset") or "0").strip()))
+        except ValueError:
+            raise AgentError("offset must be a whole number of characters")
+        end = min(len(text), start + MAX_FILE_CHARS)
+        part = text[start:end]
+        unread = {}
+        if start or end < len(text):
+            note = "[characters %d-%d of %d shown]" % (start, end, len(text))
+            if end < len(text):
+                note += (" [THE REST OF THE FILE IS NOT SHOWN: call read_file with \"offset\": \"%d\" to read "
+                         "it before concluding that something is missing]" % end)
+                unread[rel] = end
+            part = part + "\n" + note
+        return ToolResult(label_file(rel, part), read=[rel], unread=unread)
 
     def read_files(args):
         files, seen = [], set()
@@ -219,7 +234,9 @@ def build_tools(sandbox):
         rel, table = _table(args["path"])
         new_text, removed, kept, sentence = csvtools.delete_rows(table, args["column"],
                                                                  args.get("operator", "equals"),
-                                                                 args.get("value", ""))
+                                                                 args.get("value", ""), args.get("values"),
+                                                                 args.get("and_column"), args.get("and_operator"),
+                                                                 args.get("and_value"))
         return _save_table(rel, args, new_text, sentence)
 
     path = {"type": "string", "description": "path relative to the workspace, e.g. 'docs/a.txt'"}
@@ -229,7 +246,11 @@ def build_tools(sandbox):
     scalar = {"type": "string", "scalar": True}
     tools = [
         Tool("list_files", "List all files in the workspace (recursive).", {}, list_files),
-        Tool("read_file", "Read one text or CSV file. Never modifies it.", {"path": path}, read_file),
+        Tool("read_file", "Read one text or CSV file. Never modifies it. Long files are shown in parts: pass "
+             "offset (a character position) to read the next part.",
+             {"path": path, "offset": {"type": "string", "scalar": True,
+                                       "description": "optional: character position to start reading from"}},
+             read_file, required=["path"]),
         Tool("read_files", "Read several text files at once (use for summaries: pass EVERY source file).",
              {"paths": {"type": "array", "items": {"type": "string"}, "description": "list of relative paths"}},
              read_files),
@@ -273,7 +294,14 @@ def build_tools(sandbox):
              {"path": csv_path, "column": {"type": "string", "description": "column to test"},
               "operator": {"type": "string", "description": "equals (default), not_equals, contains, "
                            "greater_than, greater_or_equal, less_than, less_or_equal, is_empty"},
-              "value": dict(scalar, description="value to compare with"), "output_path": out_path},
+              "value": dict(scalar, description="value to compare with"),
+              "values": {"type": "array", "items": {"type": "string"},
+                         "description": "optional: several values; a row matching ANY of them is removed "
+                                        "('cancelled or refunded')"},
+              "and_column": {"type": "string", "description": "optional second condition that must ALSO hold "
+                                                              "('qty is 0 AND status is pending')"},
+              "and_operator": {"type": "string", "description": "operator of the second condition"},
+              "and_value": dict(scalar, description="value of the second condition"), "output_path": out_path},
              csv_delete_rows, required=["path", "column"], mutates=True),
         Tool("calculate", "Exact arithmetic on numbers copied from a file: + - * / and parentheses, e.g. "
              "'37 + 12 - 4' or '(120 + 180) / 2'. Use it for every total, difference or average.",

@@ -172,8 +172,36 @@ class Sandbox:
             raise AgentError("Refusing to delete %s: it is a directory, not a file." % rel)
         if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
             raise AgentError("Refusing to delete %s: it is not a regular file." % rel)
+        if not hasattr(self, "deleted_backup"):
+            self.deleted_backup = []
+        if stat.S_ISLNK(st.st_mode):
+            self.deleted_backup.append((full, rel, None, os.readlink(full), None))
+        else:
+            with open(full, "rb") as f:
+                self.deleted_backup.append((full, rel, f.read(), None, stat.S_IMODE(st.st_mode)))
         os.unlink(full)  # unlinks a symlink itself, never its target
         return rel
+
+    def undo_deletes(self):
+        """Put back every file deleted during this run (a failed run must not leave a
+        half-applied change). Returns the restored relative paths."""
+        restored = []
+        for full, rel, data, link, mode in reversed(getattr(self, "deleted_backup", [])):
+            if os.path.lexists(full):
+                continue
+            try:
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                if link is not None:
+                    os.symlink(link, full)
+                else:
+                    with open(full, "wb") as f:
+                        f.write(data)
+                    os.chmod(full, mode)
+                restored.append(rel)
+            except OSError:
+                pass
+        self.deleted_backup = []
+        return restored
 
     def read_file(self, raw):
         """Read a file as text. Returns (relative_path, text)."""

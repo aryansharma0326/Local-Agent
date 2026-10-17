@@ -8,6 +8,7 @@ Pure functions over text: no file access happens here.
 import csv
 import io
 import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation, getcontext
 
 from errors import AgentError
@@ -181,27 +182,86 @@ class Table:
         return fields[idx] if idx < len(fields) else ""
 
     def matching(self, col_idx, op, value):
-        return [(ri, f) for ri, f in self.data if compare(self.cell(f, col_idx), op, value)]
+        dayfirst = infer_dayfirst([self.cell(f, col_idx) for _, f in self.data])
+        return [(ri, f) for ri, f in self.data if compare(self.cell(f, col_idx), op, value, dayfirst)]
+
+    def matching_id(self, col_idx, value):
+        """Rows whose ID equals `value`. IDs are labels: an exact (case-insensitive) match
+        wins, so '007' never also selects '7'; numeric equality ('104' vs '104.0') is
+        only the fallback when nothing matches exactly."""
+        want = ("" if value is None else str(value)).strip().casefold()
+        exact = [(ri, f) for ri, f in self.data if self.cell(f, col_idx).strip().casefold() == want]
+        return exact or self.matching(col_idx, "eq", value)
 
     def text(self, records=None):
         return "".join(self.records if records is None else records)
 
 
-def compare(cell, op, value):
+_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%m/%d/%y", "%d/%m/%Y", "%B %d, %Y", "%b %d, %Y",
+                 "%B %d %Y", "%b %d %Y", "%d %B %Y", "%d %b %Y", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S")
+
+
+def parse_date(text, dayfirst=None):
+    """'2026-03-01' / '3/15/2026' / 'March 1, 2026' / '1 Mar 2026' -> date, else None.
+    Slash dates are read month-first (US) unless `dayfirst` (inferred from the column) says
+    otherwise or the first part cannot be a month."""
+    s = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", (text or "").strip().rstrip("."))
+    if not s or not re.search(r"\d", s):
+        return None
+    formats = _DATE_FORMATS
+    if dayfirst:
+        formats = ("%d/%m/%Y", "%d/%m/%y") + tuple(f for f in _DATE_FORMATS if f not in ("%d/%m/%Y",))
+    for fmt in formats:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def infer_dayfirst(cells):
+    """True when a column's slash dates are day/month (some first part > 12), False when
+    month/day (some second part > 12), None when it cannot be told."""
+    first = second = False
+    for c in cells:
+        m = re.match(r"\s*(\d{1,2})/(\d{1,2})/\d{2,4}\s*$", c or "")
+        if m:
+            first = first or int(m.group(1)) > 12
+            second = second or int(m.group(2)) > 12
+    if first and not second:
+        return True
+    if second and not first:
+        return False
+    return None
+
+
+def compare(cell, op, value, dayfirst=None):
     a, b = (cell or "").strip(), ("" if value is None else str(value)).strip()
     if op == "empty":
         return a == ""
     na, nb = parse_number(a), parse_number(b)
     numeric = na is not None and nb is not None
+    da = db = None
+    if not numeric:
+        da, db = parse_date(a, dayfirst), parse_date(b, dayfirst)
     if op in ("eq", "ne"):
-        same = (na == nb) if numeric else (a.casefold() == b.casefold())
+        if numeric:
+            same = na == nb
+        elif da is not None and db is not None:
+            same = da == db
+        else:
+            same = a.casefold() == b.casefold()
         return same if op == "eq" else not same
     if op == "contains":
         return b.casefold() in a.casefold()
-    if not numeric:  # ordering on text: fall back to case-insensitive string order
-        x, y = a.casefold(), b.casefold()
-    else:
+    if numeric:
         x, y = na, nb
+    elif da is not None and db is not None:
+        x, y = da, db
+    elif nb is not None or db is not None:
+        return False  # 'N/A', blank or text never satisfies a numeric or date comparison
+    else:  # ordering on text: case-insensitive string order
+        x, y = a.casefold(), b.casefold()
     return {"gt": x > y, "ge": x >= y, "lt": x < y, "le": x <= y}[op]
 
 
@@ -263,7 +323,7 @@ def row_sum(table, id_column, id_value, columns):
     """Add the values of several columns in the row(s) matching the id."""
     iidx = table.column(id_column, role="id")
     cidx = [table.column(c) for c in columns]
-    rows = table.matching(iidx, "eq", id_value)
+    rows = table.matching_id(iidx, id_value)
     if not rows:
         raise AgentError("No row in %s has %s = %s." % (table.name, table.header[iidx], id_value))
     if len(rows) > 1:
@@ -287,7 +347,7 @@ def update_cell(table, id_column, id_value, column, new_value):
     """Returns (new_text, sentence). Only the matching record(s) are rewritten."""
     iidx = table.column(id_column, role="id")
     cidx = table.column(column)
-    rows = table.matching(iidx, "eq", id_value)
+    rows = table.matching_id(iidx, id_value)
     if not rows:
         raise AgentError("No row in %s has %s = %s." % (table.name, table.header[iidx], id_value))
     records = list(table.records)
@@ -302,19 +362,43 @@ def update_cell(table, id_column, id_value, column, new_value):
     return table.text(records), sentence
 
 
-def delete_rows(table, column, operator, value):
-    """Returns (new_text, removed, kept, sentence). Kept records are untouched."""
+def delete_rows(table, column, operator, value, values=None, and_column=None, and_operator=None, and_value=None):
+    """Returns (new_text, removed, kept, sentence). Kept records are untouched.
+    `values` (a list) removes rows matching ANY of them; `and_*` adds a second condition
+    that must ALSO hold (e.g. qty == 0 AND status == pending)."""
     idx = table.column(column)
     op = normalize_operator(operator)
-    doomed = set(ri for ri, _ in table.matching(idx, op, value))
+    wanted = [v for v in (values or []) if str(v).strip()] or [value]
+    hits = set()
+    for v in wanted:
+        hits |= set(ri for ri, _ in table.matching(idx, op, v))
+    if not hits and len(wanted) == 1 and op in ("eq", "contains") and re.search(r"\s+or\s+|,|;|/", str(value or "")):
+        # "cancelled or refunded" / "cancelled, refunded": no row holds that literal text - one value each
+        parts = [p for p in re.split(r"\s+or\s+|\s*[,;/]\s*", str(value)) if p.strip()]
+        if len(parts) > 1:
+            wanted = parts
+            for v in parts:
+                hits |= set(ri for ri, _ in table.matching(idx, op, v))
+    cond = "%s %s %s" % (table.header[idx], operator or "equals",
+                         "" if op == "empty" else " or ".join(str(v) for v in wanted))
+    if and_column:
+        idx2 = table.column(and_column)
+        op2 = normalize_operator(and_operator)
+        hits &= set(ri for ri, _ in table.matching(idx2, op2, and_value))
+        cond += " and %s %s %s" % (table.header[idx2], and_operator or "equals", "" if op2 == "empty" else and_value)
+    doomed = hits
     records = [r for i, r in enumerate(table.records) if i not in doomed]
     # If the last record was removed, do not leave the file ending differently than before.
     if records and table.records and not _terminator(table.records[-1]) and _terminator(records[-1]):
         records[-1] = records[-1][:len(records[-1]) - len(_terminator(records[-1]))]
     kept = len(table.data) - len(doomed)
-    sentence = "removed %d of %d data row(s) where %s %s %s; %d row(s) remain" % (
-        len(doomed), len(table.data), table.header[idx], operator or "equals",
-        "" if op == "empty" else value, kept)
+    sentence = "removed %d of %d data row(s) where %s; %d row(s) remain" % (len(doomed), len(table.data), cond, kept)
+    if table.data and not doomed:
+        sentence += (" NOTE: no row matched. Check the value's spelling; for several values pass values=[...]; for "
+                     "a second condition pass and_column/and_operator/and_value")
+    elif table.data and kept == 0:
+        sentence += (" WARNING: every data row matched. If the request did not mean all rows, the condition is "
+                     "wrong (operator, value or date order) - fix it and call again on the original file")
     return table.text(records), len(doomed), kept, sentence
 
 

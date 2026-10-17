@@ -94,6 +94,60 @@ class Report:
         return (" Error entries that DO mention the request's identifiers (the innermost 'Caused by' usually names "
                 "the responsible component):\n" + "\n---\n".join(shown))
 
+    _FRAMEWORK = re.compile(r"(?:java|javax|jdk|sun|kotlin|kotlinx|scala|akka|reactor|io\.netty|org\.springframework|"
+                            r"org\.apache|com\.zaxxer|com\.google\.common)\.")
+
+    def _linked_cause_records(self):
+        """Stack-trace records ('Caused by:') linked to the request, oldest first."""
+        own = set(v for k, v in self.values.items() if self.is_component_key(k))
+        linked = [x for x in self.linked_values() if len(x) >= 4 and x not in own]
+        return [r for recs in self.records() for r in recs if "Caused by" in r and any(x in r for x in linked)]
+
+    def _cause_of(self, record):
+        """The class a record blames: a lock holder ("held by X"), else the first frame under the
+        innermost 'Caused by' that is not a JDK/framework class."""
+        tail = record[record.rindex("Caused by"):]
+        m = re.search(r"\b(?:held|owned|locked|taken) by\s+`?([A-Za-z_][\w$]*)", tail)
+        if m:
+            return m.group(1)
+        for f in re.finditer(r"\n\s*at\s+(?:[\w.]+/)?([\w.$]*?)\.?([A-Z][\w$]*)\.[\w$<>]+\(", tail):
+            if not self._FRAMEWORK.match(f.group(1) + "."):
+                return f.group(2)
+        return None
+
+    def cause_candidates(self):
+        """Classes blamed by linked stack traces, most recent first (an older stall on the same
+        worker that recovered is usually not this request's cause)."""
+        out = []
+        for r in reversed(self._linked_cause_records()):
+            c = self._cause_of(r)
+            if c and c not in out:
+                out.append(c)
+        return out
+
+    def lock_names(self):
+        """Lock names in the innermost 'Caused by' of linked stack traces ("lock 'sku-ledger#7' held by X")."""
+        own = set(v for k, v in self.values.items() if self.is_component_key(k) or re.search(r"lock", k, re.I))
+        linked = [x for x in self.linked_values() if len(x) >= 4 and x not in own]
+        out = []
+        for recs in self.records():
+            for r in recs:
+                if "Caused by" in r and any(x in r for x in linked):
+                    for m in re.finditer(r"\block\s+['\"`]?([^\s'\"`]+)['\"`]?\s+(?:is\s+)?held\s+by", r[r.rindex("Caused by"):]):
+                        if m.group(1) not in out:
+                            out.append(m.group(1))
+        return out
+
+    def is_component_key(self, key):
+        """The key asks for the responsible component/class (judged by its name first: 'lock_name' whose
+        description mentions "the root-cause component was holding" is a lock, not a component)."""
+        k = key.lower()
+        if re.search(r"root[ _-]?cause|culprit|component|class", k):
+            return True
+        if re.search(r"lock|_id$|_ids$|_at$|time|_name$|status|code|count|_ms$|depth|cents|amount", k):
+            return False
+        return bool(re.search(r"root[ _-]?cause|culprit|component|class name", self.desc.get(key, "").lower()))
+
     def linked_values(self):
         """Values transitively linked to the task's anchors: a value is linked
         when it occurs within a few lines of an anchor or of a linked value."""
@@ -180,6 +234,23 @@ class Report:
             if not v:
                 return "EMPTY"
             if self.in_evidence(v):
+                if re.search(r"lock", key, re.I) and not self.is_component_key(key):
+                    names = self.lock_names()
+                    if v in self.cause_candidates() or (names and v not in names):
+                        return ("CHECK: %r is not the lock's name (it may be the class holding the lock or another "
+                                "word from the line).%s" % (v, (" The stack traces linked to this request name the "
+                                                                "lock(s): %s." % ", ".join(names[:3])) if names
+                                                               else " Copy the lock's own name from the 'Caused by' "
+                                                                    "line."))
+                if self.is_component_key(key):
+                    cands = self.cause_candidates()
+                    if cands and v != cands[0]:
+                        return ("CHECK: %r is not the class the failure chain blames. The most recent stack trace "
+                                "linked to this request blames %s%s (the class holding the lock, or the first "
+                                "application frame under the innermost 'Caused by'). A logger name or a frame higher "
+                                "up is a symptom; use the culprit class spelled exactly as logged."
+                                % (v, cands[0], (" (older linked traces: %s)" % ", ".join(cands[1:4])) if cands[1:]
+                                   else ""))
                 if self.anchors and len(v) >= 3 and v not in self.linked_values():
                     return ("UNLINKED (verify): %r occurs in the logs, but never in the same log entry as the failed "
                             "request's identifiers found so far (%s) - it may belong to another request/worker (a "
@@ -192,6 +263,11 @@ class Report:
                 return "NOT VERBATIM: the logs spell it %r - copy the exact spelling" % self.corpus()[i:i + len(v)]
             return "NOT FOUND verbatim in the logs - copy the value exactly as logged"
         if isinstance(v, int) and not isinstance(v, bool):
+            if t == "auto":
+                glued = re.search(r"(?<![\w-])([A-Za-z][A-Za-z_]*[-_#:])%d(?![\d.])" % v, self.corpus())
+                if glued and not re.search(r"(?<![\w.#:-])%d(?![\w.])" % v, self.corpus()):
+                    return ("CHECK: the logs write this as %r, never as the bare number %d - copy the value exactly as "
+                            "logged (a JSON string)" % (glued.group(0), v))
             return "ok" if self.int_in_evidence(v) else "WARNING: the number %d does not appear in the logs" % v
         return "WARNING: unusual JSON type %s" % type(v).__name__
 

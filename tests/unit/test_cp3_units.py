@@ -114,7 +114,10 @@ class Verification(unittest.TestCase):
             r.set(dict((k, key[k]) for k in ("gateway_request_id", "upstream_trace_id", "hold_id", "worker")))
             self.assertEqual(r.check("worker"), "ok (found verbatim in the logs)")
             decoy = key["root_cause_component"][0].lower() + key["root_cause_component"][1:]
-            self.assertIn("UNLINKED", r.set({"root_cause_component": decoy}))
+            out = r.set({"root_cause_component": decoy})
+            # a decoy is flagged, and the root-cause check names the class the linked chain blames
+            self.assertTrue("CHECK" in out or "UNLINKED" in out, out)
+            self.assertIn(key["root_cause_component"], out)
             r.set({"root_cause_component": key["root_cause_component"]})
             self.assertTrue(r.check("root_cause_component").startswith("ok"))
             self.assertTrue(r.file_ok())

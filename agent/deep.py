@@ -69,6 +69,7 @@ class DeepAgent:
         self.sigs = {}
         self.last_error = None
         self.finish_rejects = 0
+        self.self_reviews = 0
         self.no_tool_streak = 0
         self.force_wrap = False
         self.final_message = None
@@ -819,8 +820,27 @@ class DeepAgent:
                     "with a line 'FILE: <path>' followed by one fenced code block." % name)
         if name == "finish":
             return self._finish(args)
+        if (name == "grep" and self.report is not None and isinstance(args.get("pattern"), str)
+                and args["pattern"].strip().strip("`'\"") in self.report.order):
+            # The logs never contain the report's key names; searching for one loops forever.
+            return ("ERROR: '%s' is a key of %s, not text in the logs - grep never finds it. Search for an "
+                    "identifier you already confirmed (the order id, trace, hold, worker or intent) or for the "
+                    "field name the logs use (look at one matching line first)." % (args["pattern"], self.primary))
         sig = name + json.dumps(args, sort_keys=True, ensure_ascii=False)[:2000]
         self.sigs[sig] = self.sigs.get(sig, 0) + 1
+        if name == "grep" and self.sigs[sig] >= 2:
+            # The same search again: show more of its matches instead of the same one line.
+            try:
+                if int(args.get("max_matches") or 0) < 20:
+                    args = dict(args, max_matches=20)
+            except (TypeError, ValueError):
+                args = dict(args, max_matches=20)
+        if 4 <= self.sigs[sig] < 8 and config.remaining() > WRAP_SECONDS + 60:
+            # Repeating an identical call cannot help: refuse it (cheap) and steer, rather than ending the run.
+            unset = [k for k in self.report.order if k not in self.report.set_keys] if self.report is not None else []
+            return ("ERROR: identical call #%d refused - its result cannot change. Do something different: another "
+                    "pattern or file, read_lines around a hit you already have, or set the keys you have confirmed%s."
+                    % (self.sigs[sig], (" (still unset: %s)" % ", ".join(unset)) if unset else ""))
         result = self.tools.call(name, args)
         self.actions.append({"call": "%s %s" % (name, json.dumps(
             {k: (v if not isinstance(v, str) or len(v) < 120 else v[:117] + "...") for k, v in args.items()},
@@ -856,8 +876,38 @@ class DeepAgent:
                         "confirmed together with ERROR/WARN, read_lines around stack traces, count with run_python."
                         + self.report._linked_errors())
             return "ERROR: not finished yet:\n- " + "\n- ".join(problems) + hint
+        if (self.kind == "programming" and not problems and self.self_reviews < 2
+                and config.remaining() > WRAP_SECONDS + 90 and config.CALL_CAP - self.llm.calls_used > 12):
+            reqs = taskspec.requirement_items(self.prompt)
+            if reqs:
+                # The harness only exercised the task's example commands; requirements without an example
+                # (flags named only in prose, input formats, error exits) were never run.
+                self.self_reviews += 1
+                return ("ERROR: not finished yet: the harness checks only ran the example commands, so most "
+                        "requirements were never exercised. With the time left, test EACH requirement below "
+                        "yourself: create a tiny CSV in $SCRATCH (run_python) that contains exactly the cases the "
+                        "requirement names (invalid rows, signs/currency symbols, surrounding spaces, ties, empty "
+                        "data, options in any order or as --name=value, missing files, bad arguments), run the "
+                        "program on it with run_command, and compare stdout, stderr and the exit status with the "
+                        "requirement text character by character. Fix every mismatch with edit_file, then call "
+                        "finish again.\nRequirements:\n" + "\n".join(reqs) + self._command_outputs())
         self.final_message = msg or None
         return "FINISH-ACCEPTED"
+
+    def _command_outputs(self, limit=2400):
+        """What the task's own commands print right now (first lines each), so the self-review can
+        compare real output with each requirement (e.g. a --json command still printing plain text)."""
+        if not self.smoke_cmds or not self.primary:
+            return ""
+        parts = []
+        for c in self.smoke_cmds[:14]:
+            if config.remaining() < WRAP_SECONDS + 40:
+                break
+            code, out, errout, dt, timed_out = run_process(c, self.root, 10, self.tools.env)
+            shown = "\n".join(out.splitlines()[:3]) if out.strip() else "(no output)"
+            parts.append("$ %s\n%s%s" % (c, shown[:300], "\n[exit %s]" % code if code else ""))
+        return ("\n\nCurrent output of the task's own commands (compare each with its requirement):\n"
+                + truncate("\n".join(parts), limit)) if parts else ""
 
     def _deliverable_problems(self, strict):
         out = []
@@ -995,4 +1045,6 @@ class DeepAgent:
         base = message or "Wrote %s." % self.primary
         if probs:
             base += " Unresolved: " + "; ".join(probs)[:400]
+        if not self.report.set_keys:
+            return "error", "No finding could be established; %s holds only placeholders. %s" % (self.primary, base)
         return "success", base

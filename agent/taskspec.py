@@ -82,18 +82,23 @@ def report_keys(prompt):
 
 _INT_HINT = re.compile(r"\b(count|number of|how many|integer|int\b|total number|amount of|ms\b|millisecond|"
                        r"seconds?\b|duration|latency|elapsed|attempts?|retries|retry count|depth|size\b|port\b|"
-                       r"status code|http status|exit code|bytes\b|occurrences|times\b)", re.I)
+                       r"status code|http status|exit code|bytes\b|occurrences|times\b|cents\b)", re.I)
 _STR_HINT = re.compile(r"\b(id\b|ids\b|identifier|name\b|named|path|timestamp|time\b|when\b|class|component|"
                        r"worker|service|host|endpoint|url|method|message|reason|thread|lock|key\b|version|"
                        r"intent|trace|string|spelled|exactly as)", re.I)
-_INT_SUFFIX = re.compile(r"(_ms|_count|_seconds|_secs|_attempts|_retries|_depth|_size|_bytes|_port|_total|_code|"
-                         r"_num|_number|^num_|^count_|_status_code|_http_status)$", re.I)
+_INT_SUFFIX = re.compile(r"(_ms|_count|_seconds|_secs|_attempts|_retries|_depth|_size|_bytes|_port|_total|_cents|"
+                         r"^count_|_status_code|_http_status)$", re.I)
 _STR_SUFFIX = re.compile(r"(_id|_ids|_name|_path|_ts|_at|_time|_timestamp|_component|_class|_worker|_thread|"
                          r"_lock|_service|_host|_url|_method|_message|_reason|^worker$|^host$)$", re.I)
 
 
 def key_type(key, description):
     """'int', 'str' or 'auto' for a report key (DB-1 type rules)."""
+    if re.search(r"_(?:num|number|no)$|^num_", key, re.I):
+        return "auto"  # an "order number" is often an identifier like ABC-123: keep the logged value's type
+    if re.search(r"_code$", key, re.I) and not re.search(r"status|http|exit", key + " " + (description or ""), re.I):
+        # "error code" may be INV_HOLD_TIMEOUT or 1003: take the logged value's own type
+        return "auto"
     if _INT_SUFFIX.search(key):
         return "int"
     if _STR_SUFFIX.search(key):
@@ -156,3 +161,30 @@ def checklist(prompt):
 
 def dumps_report(obj):
     return json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+
+
+def requirement_items(prompt, limit=14):
+    """The numbered requirements of a task ("1. **`count`** - prints ..."), one string each
+    with continuation lines folded in; hidden placeholders ("7-12. *(hidden)*") are skipped."""
+    text = prompt or ""
+    m = re.search(r"^#+\s*requirements\b.*$", text, re.I | re.M)
+    if m:
+        text = text[m.end():]
+    items, cur = [], None
+    for line in text.split("\n"):
+        if re.match(r"^#+\s", line) and items:
+            break
+        h = re.match(r"^\s{0,3}(\d{1,2})\.\s+(.*)$", line)
+        if h:
+            cur = [h.group(1), h.group(2).strip()]
+            items.append(cur)
+        elif cur is not None and line.strip() and line.startswith((" ", "\t")):
+            cur[1] += " " + line.strip()
+        elif not line.strip():
+            cur = None
+    out = []
+    for n, body in items:
+        if re.search(r"\(hidden\)", body, re.I):
+            continue
+        out.append("%s. %s" % (n, body if len(body) <= 420 else body[:417] + "..."))
+    return out[:limit]
