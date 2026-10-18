@@ -356,6 +356,7 @@ run uses a fresh workspace and a fresh session store per case.
 | Suite | Result |
 |---|---|
 | Offline (`bash tests/run_offline.sh`: static, unit, mock end-to-end, fault injection) | **503/503** |
+| Grader simulation (`bash tests/grader_sim.sh`: the zip is built, unpacked read-only into a path with spaces, and the offline suite is run under `/bin/bash` 3.2 with a sanitized env) | **pass**, exit 0 |
 | Project live suite (`tests/test_live.py`, CP1 + CP2) | **99/99** |
 | Held-out set (`tests/heldout.py --reps 3`, 33 conversations written after development) | **33/33**; a conversation counts only if all 3 reps pass |
 | Adversarial suite, CP1 + CP2 (`tests/adversarial`, 141 cases, failures rerun twice) | **141/141** on the first run, no flaky cases |
@@ -420,6 +421,32 @@ PASS  CP3  programming (tally.py)             exit=0 211.6s  ...
 PASS  CP3  debugging (REPORT.json)            exit=0  57.9s  ...
 
 13/13 steps passed in 320s
+```
+
+### `bash tests/grader_sim.sh` (the packaged zip, tested the way the grader will run it)
+
+```
+wrote dist/hw1_submission.zip (98 entries)
+GS-03 PASS: 98 entries, required files present, nothing excluded leaked
+GS-05: /bin/bash is GNU bash, version 3.2.57(1)-release (arm64-apple-darwin26)
+suite                        result   detail
+test_static                  PASS     Ran 9 tests in 0.686s
+test_core                    PASS     Ran 20 tests in 13.834s
+test_sessions_store          PASS     Ran 10 tests in 0.357s
+test_cp3_units               PASS     Ran 19 tests in 1.516s
+test_adversarial_fixes       PASS     Ran 25 tests in 0.531s
+test_sandbox                 PASS     Ran 53 tests in 0.144s
+test_verify                  PASS     Ran 24 tests in 0.085s
+test_csv                     PASS     Ran 50 tests in 0.438s
+test_offline                 PASS     56 cases: PASS=56
+test_edge_cases              PASS     115 cases: PASS=115
+test_sessions                PASS     78 cases: PASS=78
+test_cp3_mock                PASS     28 cases: PASS=28
+test_contract                PASS     16 cases: PASS=16
+------------------------------------------------------------
+tests passed: 503, failed: 0, duration: 214s
+ALL OFFLINE SUITES PASSED
+grader simulation exit: 0
 ```
 
 ## Known limitations
