@@ -446,7 +446,49 @@ def t_read_invented_total_is_pushed_back():
     ws, r, _ = go({"inventory.txt": table}, "Read inventory.txt. How many blue notebooks are currently in stock?",
                   [call("read_file", path="inventory.txt"), ok("There are 15 blue notebooks in stock."),
                    ok("There are 12 blue notebooks in stock.")])
-    expect(r.status == "success" and "12" in r.message and saw("appears nowhere"), r.stdout)
+    expect(r.status == "success" and "12" in r.message and saw("single matching row only"), r.stdout)
+
+
+def t_delete_compound_one_missing_deletes_none():
+    # All-or-nothing: "x.txt and y.txt" with y missing deletes nothing and exits 1.
+    ws, r, b = go({"x.txt": "x", "keep.txt": "k"}, "Delete x.txt and y.txt",
+                  [call("delete_file", path="x.txt"), ok("Deleted x.txt.")])
+    expect(r.status == "error" and ws.exists("x.txt") and "y.txt" in r.message, r.stdout)
+    unchanged_except(ws, b, set())
+
+
+def t_delete_compound_three_files():
+    ws, r, b = go({"a.txt": "a", "b.txt": "b", "c.txt": "c", "d.txt": "d"}, "Delete a.txt, b.txt and c.txt.",
+                  [call("delete_file", path="a.txt"), call("delete_file", path="b.txt"),
+                   call("delete_file", path="c.txt"), ok()])
+    expect(r.status == "success" and not any(ws.exists(f) for f in ("a.txt", "b.txt", "c.txt"))
+           and ws.exists("d.txt"), r.stdout)
+    unchanged_except(ws, b, {"a.txt", "b.txt", "c.txt"})
+
+
+def t_delete_compound_three_one_missing():
+    ws, r, b = go({"a.txt": "a", "c.txt": "c"}, "Delete a.txt, b.txt and c.txt.",
+                  [call("delete_file", path="a.txt"), call("delete_file", path="c.txt"), ok()])
+    expect(r.status == "error" and ws.exists("a.txt") and ws.exists("c.txt"), r.stdout)
+    unchanged_except(ws, b, set())
+
+
+def t_read_offset_past_end_is_an_error():
+    # Live (CV-B08): the model passed offset=112 for a 62-character file, got nothing back and made up a number.
+    ws, r, _ = go({"m.csv": "month,revenue\nJanuary,120\nFebruary,180\n"}, "Read m.csv. What was the revenue in February?",
+                  [call("read_file", path="m.csv", offset="112"), call("read_file", path="m.csv"),
+                   ok("The revenue in February was 180.")])
+    expect(r.status == "success" and "180" in r.message and saw("past the end"), r.stdout)
+
+
+def t_summary_per_bullet_limit_enforced():
+    long = "- a.txt: " + " ".join(["word"] * 30)
+    ws, r, _ = go({"a.txt": "alpha facts here\n", "b.txt": "beta facts here\n"},
+                  "Use a.txt and b.txt to create out.txt with one bullet point per file, each bullet under 10 words.",
+                  [call("read_files", paths=["a.txt", "b.txt"])] +
+                  [call("write_file", path="out.txt", content=long + "\n- b.txt: beta facts")] * 3 + [ok()])
+    lines = [l for l in ws.read("out.txt").split("\n") if l.strip()]
+    expect(r.status == "success" and len(lines) == 2 and all(len(l.split()) <= 10 for l in lines), ws.read("out.txt"))
 
 
 def t_read_calculated_total_is_allowed():

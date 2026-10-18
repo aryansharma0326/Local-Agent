@@ -286,7 +286,9 @@ def build_catalog():
     L += ["## CP3", ""]
     for c in cases_cp3.CASES:
         L += ["### `%s`: %s (%s)" % (c["id"], NAMES[c["group"]], c["tag"]), "", c["attack"], ""]
-        if c["kind"] == "prog":
+        if c["kind"] == "words":
+            L += ["Prompt: the wordstat.py practice task (4 requirements), graded like the agent-dev live test.", ""]
+        elif c["kind"] == "prog":
             L += ["Prompt: the official `tally.py` task with requirements 7-12 %s. Graded per requirement against "
                   "`cp3/ref_tally.py` (see `cp3/prog_specs.py`)." % (
                       "hidden" if c["variant"] == "O" else "set to variant %s" % c["variant"]), ""]

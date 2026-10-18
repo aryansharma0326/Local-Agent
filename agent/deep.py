@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 
 import config
 import profiling
@@ -60,6 +61,7 @@ class DeepAgent:
                                  self._evidence_files(), self._anchor_ids())
         self.tools = DeepTools(sandbox, self.scratch, kind, self.deliverables, protected, self.report)
         self.tools.on_write = self._after_write
+        self.tools.can_rewrite = self.can_rewrite
         self.facts = {}
         self.smoke_cmds = []
         self.versions = []           # [(score, content, label)] of the primary deliverable
@@ -303,6 +305,63 @@ class DeepAgent:
                 out.append(" ".join(base[:3] + ["--file", "no_such_file.csv"]))
         return out[:8]
 
+    def _equals_form_check(self, outputs):
+        """One command: `--file=PATH` must behave like `--file PATH` (the --name=value form)."""
+        if not re.search(r"--file\b", self.prompt) or config.remaining() < WRAP_SECONDS + 20:
+            return []
+        default = self._default_data_file()
+        for c, (code, out) in outputs.items():
+            if code != 0:
+                continue
+            m = re.search(r"--file\s+(\S+)", c)
+            alt = (c[:m.start()] + "--file=" + m.group(1) + c[m.end():]) if m else (
+                "%s --file=%s" % (c, default) if default else None)
+            if not alt:
+                continue
+            c2, o2, e2, _, _ = run_process(alt, self.root, 20, self.tools.env)
+            if (c2, o2) != (code, out):
+                return ["`%s` printed %r (exit %s) but `%s` printed %r (exit %s); the option must also work in the "
+                        "--name=value form" % (c, out.strip()[:80], code, alt, o2.strip()[:80], c2)]
+            return []
+        return []
+
+    def _format_hints(self, outputs):
+        """INFO only (never a problem): how the program treats '$'/'+' amounts and padded fields, on a 3-row
+        copy of the data in the scratch dir. A hidden requirement may accept or reject such rows."""
+        default = self._default_data_file()
+        if not default or not default.endswith(".csv") or config.remaining() < WRAP_SECONDS + 30:
+            return []
+        try:
+            with open(os.path.join(self.root, default), "r", encoding="utf-8", errors="replace") as f:
+                head = [next(f) for _ in range(4)]
+        except (OSError, StopIteration):
+            return []
+        cmd = next((c for c, (code, _) in outputs.items() if code == 0 and "--file" not in c), None)
+        if not cmd:
+            return []
+        plain = os.path.join(self.scratch, "hint_plain.csv")
+        fancy = os.path.join(self.scratch, "hint_fancy.csv")
+
+        def dress(line, k):
+            cells = line.rstrip("\n").split(",")
+            out = []
+            for j, cell in enumerate(cells):
+                if re.fullmatch(r"-?\d+(\.\d+)?", cell):
+                    cell = ("-$" + cell[1:]) if cell.startswith("-") else (("$" if (k + j) % 2 else "+") + cell)
+                out.append(" %s " % cell if j % 2 == 0 else cell)
+            return ",".join(out) + "\n"
+        with open(plain, "w", encoding="utf-8") as f:
+            f.writelines(head)
+        with open(fancy, "w", encoding="utf-8") as f:
+            f.writelines([head[0]] + [dress(l, k) for k, l in enumerate(head[1:])])
+        a = run_process("%s --file %s" % (cmd, plain), self.root, 20, self.tools.env)
+        b = run_process("%s --file %s" % (cmd, fancy), self.root, 20, self.tools.env)
+        if (a[0], a[1]) == (b[0], b[1]):
+            return []
+        return ["(INFO, not a problem) the same 3 rows written with '$'/'+' amounts and spaces around fields give a "
+                "different result (%r vs %r). Only change this if a requirement says how such values are treated."
+                % (a[1].strip()[:60], b[1].strip()[:60])]
+
     def _default_data_file(self):
         """The data file the task names as the default for --file, if it is in the workspace."""
         if not re.search(r"--file\b", self.prompt):
@@ -424,12 +483,15 @@ class DeepAgent:
         outputs = {}
         flags = []
         failed_examples = []
+        passed = set()
         for c in self.smoke_cmds:
             if config.remaining() < WRAP_SECONDS + 10:
                 lines.append("(remaining checks skipped: low on time)")
                 break
             code, out, errout, dt, timed_out = run_process(c, self.root, 20, self.tools.env)
             ok = (code == 0 and not timed_out and "Traceback" not in errout)
+            if ok:
+                passed.add(c)
             score += 2 if ok else 0
             outputs[c] = (code, out)
             if not ok:
@@ -472,9 +534,18 @@ class DeepAgent:
             if timed_out or "Traceback" in errout:
                 flags.append("edge case `%s` %s:\n%s" % (c, "timed out" if timed_out else "crashed with a traceback",
                                                           truncate(errout.strip(), 600)))
+            elif "no_such_file" in c and (code == 0 or not errout.strip()):
+                flags.append("`%s` (a file that does not exist) exited with status %s%s; a missing file must exit "
+                             "with a non-zero status and an error message on stderr" % (
+                                 c, code, "" if errout.strip() else " and printed nothing on stderr"))
             else:
+                if "no_such_file" in c:
+                    passed.add(c)
                 lines.append("$ %s   (edge probe)\n  exit=%s stdout: %s%s" % (
                     c, code, out.strip()[:120] or "(empty)", ("  stderr: " + errout.strip()[:160]) if errout.strip() else ""))
+        flags += self._equals_form_check(outputs)
+        lines += self._format_hints(outputs)
+        self.last_pass = passed
         # an option that does not change the output was probably ignored
         cmds = list(outputs)
         for a in cmds:
@@ -603,6 +674,7 @@ class DeepAgent:
                           "(read the CURRENT file, run the failing command with run_command, or try a fix in "
                           "$SCRATCH with run_python)." % same[0][2])
                 if self.reverts >= 3:
+                    self.want_rewrite = True  # oscillating edits: one clean rewrite is allowed
                     revert += " You keep oscillating: rewrite the whole program cleanly with write_file."
             self.versions.append((score, content, "v%d" % (len(self.versions) + 1)))
             if score >= 10:
@@ -622,6 +694,7 @@ class DeepAgent:
             revert += ("\n(harness) Your last edits did not change any check result, so the cause is somewhere "
                        "else. Re-read the CURRENT file from the top (how arguments/options are parsed and looked up, "
                        "how rows are loaded) and fix the real cause; or run a small experiment with run_python.")
+        revert += self._review_regression(rel) or self._broken_edit_guard(rel)
         return ("\n\nHARNESS CHECK of %s (version %d):\n%s\nCompare every output above with the requirements "
                 "(exact format, values consistent with the data profile).%s" % (rel, len(self.versions), text, revert))
 
@@ -718,8 +791,7 @@ class DeepAgent:
             self._dump(msgs)
             cap = min(240.0, config.remaining() - 15) if self.kind == "programming" else 90.0
             try:
-                reply = self.llm.complete(msgs, tools=self.tools.schemas(), max_tokens=desired,
-                                          timeout_cap=cap, min_tokens=minimum)
+                reply = self._call_model(msgs, desired, minimum, cap)
             except BudgetExhausted as e:
                 log(str(e))
                 return self._wrapup("model-call cap")
@@ -731,6 +803,24 @@ class DeepAgent:
             done = self._handle(reply)
             if done:
                 return done
+
+    _TRANSIENT = re.compile(r"connection|ssl|timed out|timeout|reset|broken pipe|eof", re.I)
+
+    def _call_model(self, msgs, desired, minimum, cap, sleep=time.sleep):
+        """One model call. A transient endpoint failure (connection reset, SSL error, timeout) is retried
+        up to twice, 5 then 10 s apart, while there is time left; anything else is raised at once."""
+        for attempt in range(3):
+            try:
+                return self.llm.complete(msgs, tools=self.tools.schemas(), max_tokens=desired,
+                                         timeout_cap=cap, min_tokens=minimum)
+            except LLMError as e:
+                if self._TRANSIENT.search(str(e)) and attempt < 2 and config.remaining() > 60 + WRAP_SECONDS:
+                    wait = 5 + 5 * attempt
+                    log("model error (%s); retrying in %ds (endpoint failure, time left)" % (e, wait))
+                    sleep(wait)
+                    cap = min(cap, config.remaining() - 15)
+                    continue
+                raise
 
     def _dump(self, msgs):
         """Development aid: AGENT_DEBUG_DUMP=<file outside the workspace> keeps the latest request."""
@@ -842,6 +932,11 @@ class DeepAgent:
                     "pattern or file, read_lines around a hit you already have, or set the keys you have confirmed%s."
                     % (self.sigs[sig], (" (still unset: %s)" % ", ".join(unset)) if unset else ""))
         result = self.tools.call(name, args)
+        if name == "edit_file" and self.kind == "programming":
+            self.failed_edits = getattr(self, "failed_edits", 0) + 1 if result.startswith("ERROR") else 0
+            if self.failed_edits == 3:
+                result += ("\n(harness) Three edits in a row failed to apply. You may now rewrite the WHOLE program "
+                           "once with write_file (complete file, fixing the open problems).")
         self.actions.append({"call": "%s %s" % (name, json.dumps(
             {k: (v if not isinstance(v, str) or len(v) < 120 else v[:117] + "...") for k, v in args.items()},
             ensure_ascii=False)[:400]), "result": result[:300], "tool": name})
@@ -876,13 +971,16 @@ class DeepAgent:
                         "confirmed together with ERROR/WARN, read_lines around stack traces, count with run_python."
                         + self.report._linked_errors())
             return "ERROR: not finished yet:\n- " + "\n- ".join(problems) + hint
+        slowest = getattr(self.llm, "slowest_call", 0.0) or 0.0
         if (self.kind == "programming" and not problems and self.self_reviews < 2
-                and config.remaining() > WRAP_SECONDS + 90 and config.CALL_CAP - self.llm.calls_used > 12):
+                and config.remaining() > max(WRAP_SECONDS + 90, 2 * slowest + 10 + WRAP_SECONDS)
+                and config.CALL_CAP - self.llm.calls_used > 12):
             reqs = taskspec.requirement_items(self.prompt)
             if reqs:
                 # The harness only exercised the task's example commands; requirements without an example
                 # (flags named only in prose, input formats, error exits) were never run.
                 self.self_reviews += 1
+                self._snapshot_for_review()
                 return ("ERROR: not finished yet: the harness checks only ran the example commands, so most "
                         "requirements were never exercised. With the time left, test EACH requirement below "
                         "yourself: create a tiny CSV in $SCRATCH (run_python) that contains exactly the cases the "
@@ -893,6 +991,68 @@ class DeepAgent:
                         "finish again.\nRequirements:\n" + "\n".join(reqs) + self._command_outputs())
         self.final_message = msg or None
         return "FINISH-ACCEPTED"
+
+    def _snapshot_for_review(self):
+        """Keep the working program and the commands it passes, so a self-review edit that breaks one of
+        them is undone automatically (the review must never cost points already earned)."""
+        try:
+            with open(os.path.join(self.root, self.primary), "r", encoding="utf-8", errors="replace",
+                      newline="") as f:
+                src = f.read()
+        except OSError:
+            return
+        if not getattr(self, "last_pass", None):
+            self._smoke()
+        self.review_snapshot = (src, set(getattr(self, "last_pass", set()) or set()))
+
+    def _review_regression(self, rel):
+        """After an edit during self-review: restore the snapshot if anything that passed now fails."""
+        snap = getattr(self, "review_snapshot", None)
+        if not snap or rel != self.primary:
+            return ""
+        src, passed = snap
+        broken = sorted(passed - set(getattr(self, "last_pass", set()) or set()))
+        if not broken and not self._compile_error(rel):
+            return ""
+        self.sb.create_file(rel, src)
+        self._smoke()
+        log("self-review edit broke %s; restored the snapshot" % (broken[:3] or "compilation"))
+        return ("\n(harness) That change broke %s, which worked before the review, so the previous version was "
+                "RESTORED automatically. Make a smaller change that keeps those commands working, or call finish."
+                % (", ".join("`%s`" % b for b in broken[:3]) or "compilation"))
+
+    def _broken_edit_guard(self, rel):
+        """An edit that leaves the program running none of the task's example commands, when the previous
+        version ran some, is undone at once (seen live: a broken edit, then four failed fix attempts)."""
+        if self.kind != "programming" or rel != self.primary or not self.smoke_cmds:
+            return ""
+        hist = getattr(self, "pass_history", [])
+        self.pass_history = hist
+        now = set(getattr(self, "last_pass", set()) or set()) & set(self.smoke_cmds)
+        if len(self.versions) >= 2 and hist and hist[-1] and not now:
+            score, src, name = self.versions[-2]
+            self.sb.create_file(rel, src)
+            self.versions.append(self.versions[-2])
+            self._smoke()
+            hist.append(set(getattr(self, "last_pass", set()) or set()) & set(self.smoke_cmds))
+            log("edit left no example command working; restored %s" % name)
+            return ("\n(harness) That edit left NONE of the task's example commands working (the previous version "
+                    "ran them), so the previous version %s was RESTORED. Make a smaller, exact edit to the CURRENT "
+                    "file shown in PINNED STATE." % name)
+        hist.append(now)
+        return ""
+
+    def can_rewrite(self, rel):
+        """Rewrite cap: after the first full write, the deliverable changes by edit_file only - unless it
+        does not run at all, edits keep failing (3 in a row), or the harness scheduled a fresh rewrite."""
+        if self.kind != "programming" or rel != self.primary or not self.versions:
+            return True
+        if getattr(self, "want_rewrite", False) or getattr(self, "failed_edits", 0) >= 3:
+            return True
+        if self._compile_error(rel):
+            return True
+        smoke = getattr(self, "last_pass", None)
+        return smoke is not None and not smoke and bool(self.smoke_cmds)
 
     def _command_outputs(self, limit=2400):
         """What the task's own commands print right now (first lines each), so the self-review can

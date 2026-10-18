@@ -288,6 +288,48 @@ def t_csv_row_sum_candidates():
     expect(ws.read("candidates.csv") == CANDIDATES, "source modified")
 
 
+def t_heldout_update_label_statement_is_acknowledged():
+    ws = Workspace({})
+    r = turn(ws, "Update: my sister's birthday is on the 14th of June.", 4101,
+             [ok("Noted: your sister's birthday is on the 14th of June.")])
+    expect(r.status == "success", r.stdout)
+    r = turn(ws, "When is my sister's birthday?", 4101, [ok("Your sister's birthday is on the 14th of June.")])
+    expect(r.status == "success" and "14" in r.message, r.stdout)
+
+
+def t_heldout_statement_shaped_delete_is_not_faked():
+    ws = Workspace({"draft.txt": "old draft"})
+    r = turn(ws, "We should delete draft.txt.", 4102, [ok("Done."), ok("Done.")])
+    expect(r.status == "error" and ws.exists("draft.txt"), "fake done accepted: " + r.stdout)
+    ws = Workspace({"draft.txt": "old draft"})
+    r = turn(ws, "We should delete draft.txt.", 4103, [call("delete_file", path="draft.txt"), ok("Deleted draft.txt.")])
+    expect(r.status == "success" and not ws.exists("draft.txt"), r.stdout)
+
+
+def t_heldout_statement_shaped_delete_later_in_session():
+    ws = Workspace({"draft.txt": "old draft"})
+    turn(ws, "My project code name is Cedar.", 4104, [ok("Noted.")])
+    r = turn(ws, "We should delete draft.txt.", 4104, [ok("Done."), ok("Done.")])
+    expect(r.status == "error" and ws.exists("draft.txt"), "fake done accepted after history: " + r.stdout)
+
+
+def t_heldout_request_shaped_writes_are_not_blocked():
+    ws = Workspace({})
+    r = turn(ws, "We need a file plan.txt that says launch on Monday.", 4105,
+             [call("write_file", path="plan.txt", content="launch on Monday"), ok("Created plan.txt.")])
+    expect(r.status == "success" and ws.read("plan.txt") == "launch on Monday", r.stdout)
+    ws = Workspace({})
+    r = turn(ws, "My notes file todo.txt should have the line buy milk.", 4106,
+             [call("write_file", path="todo.txt", content="buy milk"), ok("Created todo.txt.")])
+    expect(r.status == "success" and ws.read("todo.txt") == "buy milk", r.stdout)
+    ws = Workspace({"a.txt": "Alpha shipped the export.\n", "b.txt": "Beta slipped to Friday.\n"})
+    r = turn(ws, "I would appreciate a summary of a.txt and b.txt in sum.txt.", 4107,
+             [call("read_files", paths=["a.txt", "b.txt"]),
+              call("write_file", path="sum.txt", content="Alpha shipped the export; Beta slipped to Friday."),
+              ok("Created sum.txt.")])
+    expect(r.status == "success" and ws.exists("sum.txt"), r.stdout)
+
+
 def t_csv_question_about_values():
     ws = Workspace({"candidates.csv": CANDIDATES})
     r = turn(ws, "According to candidates.csv, what is Raj's test score?", 1,

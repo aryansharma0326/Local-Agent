@@ -148,6 +148,9 @@ def build_tools(sandbox):
             start = max(0, int(str(args.get("offset") or "0").strip()))
         except ValueError:
             raise AgentError("offset must be a whole number of characters")
+        if start and start >= len(text):
+            raise AgentError("offset %d is past the end of %s (it has %d characters); read it without an offset"
+                             % (start, rel, len(text)))
         end = min(len(text), start + MAX_FILE_CHARS)
         part = text[start:end]
         unread = {}

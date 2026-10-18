@@ -10,6 +10,7 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -22,19 +23,6 @@ from errors import AgentError
 OUTPUT_CHARS = 7000          # ~2.3k tokens per tool result (LOOP-9)
 READ_LINES_DEFAULT = 200
 MAX_TIMEOUT = 120
-
-_BLOCKED = [
-    (re.compile(r"(^|[\s;&|(`$])(curl|wget|ssh|scp|sftp|rsync|nc|ncat|netcat|telnet|ftp|socat)\b"),
-     "network tools are not allowed"),
-    (re.compile(r"(^|[\s;&|(`$])(sudo|su|doas)\b"), "privilege escalation is not allowed"),
-    (re.compile(r"\b(pip3?|python3? -m pip|npm|yarn|pnpm|apt(-get)?|brew|conda|gem|cargo)\s+(install|add|i)\b"),
-     "installing packages is not allowed (standard library only)"),
-    (re.compile(r"\bgit\s+(clone|push|pull|fetch)\b"), "network git commands are not allowed"),
-    (re.compile(r"\brm\s+(-\w*\s+)*(/|~|\$HOME|\.\.)(\s|/|$)"), "deleting outside the workspace is not allowed"),
-    (re.compile(r"\b(mkfs|shutdown|reboot|halt|kill\s+-9\s+-1|:\(\)\s*\{)"), "destructive system commands are not allowed"),
-    (re.compile(r"(urllib|requests|http\.client|socket)\b.*\b(urlopen|get|post|connect)\s*\("), "network access is not allowed"),
-]
-
 
 def truncate(text, limit=OUTPUT_CHARS, hint=""):
     """Keep head and tail with an accurate marker (LOOP-9)."""
@@ -87,18 +75,19 @@ def _reindent_match(text, old, new):
     return real_old, "\n".join(out)
 
 
-def blocked_reason(cmd):
-    for rx, why in _BLOCKED:
-        if rx.search(cmd):
-            return why
-    return None
-
-
-def run_process(cmd, cwd, timeout, env, shell=True):
-    """Run a command in its own process group with stdin=/dev/null and
-    captured output; on timeout the whole group is killed."""
+def run_process(cmd, cwd, timeout, env, shell=False):
+    """Run a program (never through a shell) in its own process group with stdin=/dev/null and
+    captured output; on timeout the whole group is killed. A string command is split like a
+    shell would split words (quotes respected) - no pipes, redirects or expansions."""
     t0 = time.monotonic()
-    args = ["/bin/bash", "-c", cmd] if shell else cmd
+    if shell:
+        raise ValueError("shell execution is not supported")
+    if isinstance(cmd, str):
+        try:
+            cmd = shlex.split(cmd)
+        except ValueError as e:
+            return None, "", "cannot parse command: %s" % e, 0.0, False
+    args = cmd
     try:
         proc = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, start_new_session=True)
@@ -192,8 +181,9 @@ class DeepTools:
             t.insert(4, _schema("edit_file", "Replace an exact snippet of a file with new text (old must match "
                                 "exactly, including indentation).", {"path": S, "old": S, "new": S,
                                                                      "count": I}, ["path", "old", "new"]))
-            t.insert(5, _schema("run_command", "Run a shell command (cwd = workspace; $SCRATCH = scratch dir). "
-                                "Output is captured; network and installs are blocked.",
+            t.insert(5, _schema("run_command", "Run a Python program, no shell: `python3 <file.py> [args...]` (a "
+                                "file in the workspace or $SCRATCH) or `python3 -m unittest|pytest [args...]`. cwd = "
+                                "workspace; output is captured; no pipes, redirects or other programs.",
                                 {"command": S, "timeout": I}, ["command"]))
         return t
 
@@ -402,6 +392,12 @@ class DeepTools:
             "appended to" if mode == "a" else "wrote", rel, content.count("\n") + 1, len(content), extra or "")
 
     def t_write_file(self, path, content):
+        full, rel, scratch = self._resolve(path, for_write=True)
+        guard = getattr(self, "can_rewrite", None)
+        if not scratch and os.path.exists(full) and guard is not None and not guard(rel):
+            raise AgentError("%s already exists and works: change it with edit_file (small, exact edits), not a "
+                             "full rewrite. A rewrite is allowed only if the program does not run, or after 3 failed "
+                             "edit_file calls in a row." % rel)
         return self._write(path, content, "w")
 
     def t_append_file(self, path, content):
@@ -450,22 +446,49 @@ class DeepTools:
         return "OK: edited %s (%d replacement%s)%s" % (rel, min(n, count if count > 0 else n),
                                                        "" if n == 1 else "s", extra or "")
 
+    _ALLOWED = ("allowed: `python3 <file.py in the workspace or $SCRATCH> [args...]` or "
+                "`python3 -m unittest|pytest [args...]` - one program, no shell (no pipes, ;, &&, redirects, "
+                "globs or other programs)")
+
+    def command_argv(self, command):
+        """Parse and vet a run_command string -> argv for a program run without a shell."""
+        raw = command.replace("${SCRATCH}", self.scratch).replace("$SCRATCH", self.scratch)
+        lex = shlex.shlex(raw, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        try:
+            toks = list(lex)
+        except ValueError as e:
+            raise AgentError("cannot parse the command (%s); %s" % (e, self._ALLOWED))
+        if any(re.fullmatch(r"[|&;<>()]+", t) for t in toks) or "$" in raw or "`" in raw:
+            raise AgentError("command refused: %s" % self._ALLOWED)
+        if not toks or os.path.basename(toks[0]) not in ("python3", "python"):
+            raise AgentError("command refused (%s is not allowed); %s" % (toks[0] if toks else "empty", self._ALLOWED))
+        argv, i = [sys.executable], 1
+        while i < len(toks) and toks[i] in ("-B", "-u", "-I", "-E", "-s"):
+            argv.append(toks[i])
+            i += 1
+        if i < len(toks) and toks[i] == "-m":
+            if i + 1 >= len(toks) or toks[i + 1] not in ("unittest", "pytest"):
+                raise AgentError("command refused: only `-m unittest` and `-m pytest` are allowed; %s" % self._ALLOWED)
+            return argv + toks[i:]
+        if i >= len(toks) or not toks[i].endswith(".py"):
+            raise AgentError("command refused: name a .py file to run; %s" % self._ALLOWED)
+        full, rel, scratch = self._resolve(toks[i])
+        if not os.path.isfile(full):
+            raise AgentError("%s does not exist" % rel)
+        return argv + [full] + toks[i + 1:]
+
     def t_run_command(self, command, timeout=30):
         if not isinstance(command, str) or not command.strip():
             raise AgentError("command must be a non-empty string")
-        why = blocked_reason(command)
-        if why:
-            raise AgentError("command refused: %s" % why)
+        argv = self.command_argv(command)
         timeout = max(1, min(int(timeout or 30), MAX_TIMEOUT))
-        code, out, err, dt, timed_out = run_process(command, self.root, timeout, self.env)
+        code, out, err, dt, timed_out = run_process(argv, self.root, timeout, self.env)
         return self._fmt_run(code, out, err, dt, timed_out, timeout)
 
     def t_run_python(self, code, timeout=30):
         if not isinstance(code, str) or not code.strip():
             raise AgentError("code must be a non-empty string")
-        why = blocked_reason(code)
-        if why:
-            raise AgentError("code refused: %s" % why)
         path = os.path.join(self.scratch, "snippet_%d.py" % int(time.time() * 1000))
         with open(path, "w", encoding="utf-8") as f:
             f.write(code)

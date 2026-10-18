@@ -605,6 +605,59 @@ Workspace: `a.tmp`, `cache/a.tmp`, `cache/b.tmp`, `cache/keep.dat`, `cache/sub/c
 
 Allowed changes: `cache/a.tmp`, `cache/b.tmp`, `cache/sub/c.tmp`
 
+### `DL-C01`: Delete a file (grader-like)
+
+Two named files, both present: both go, nothing else.
+
+Workspace: `x.txt`, `y.txt`, `z.txt`
+
+1. `Delete x.txt and y.txt.`  
+   Expect: status success; x.txt deleted; y.txt deleted
+
+Allowed changes: `x.txt`, `y.txt`
+
+### `DL-C02`: Delete a file (grader-like)
+
+Three named files, one missing: all-or-nothing means none is deleted and the run fails naming the missing file.
+
+Workspace: `a.log`, `c.log`, `d.log`
+
+1. `Delete a.log, b.log and c.log.`  
+   Expect: status error; message contains (b.log)
+
+### `SM-C01`: Multi-file summary (grader-like)
+
+One bullet per named file combined with a per-bullet word limit.
+
+Workspace: `logs/resolution.txt`, `logs/start.txt`, `logs/update.txt`
+
+1. `Use logs/start.txt, logs/update.txt, and logs/resolution.txt to create reports/per_file.txt with one bullet point per file, each bullet under 20 words.`  
+   Expect: status success; reports/per_file.txt is exactly 3 bullet lines; every line of reports/per_file.txt has at most 19 words; reports/per_file.txt mentions (load balancer)
+
+Allowed changes: `reports/`
+
+### `SM-C02`: Multi-file summary (grader-like)
+
+A word range phrased 'no fewer than 70 and no more than 110 words'.
+
+Workspace: `alpha.txt`, `beta.txt`, `gamma.txt`
+
+1. `Write summary/teams.txt summarizing alpha.txt, beta.txt and gamma.txt in no fewer than 70 and no more than 110 words.`  
+   Expect: status success; summary/teams.txt has at least 70 words; summary/teams.txt has at most 110 words; summary/teams.txt mentions (billing) AND (login) AND (support)
+
+Allowed changes: `summary/`
+
+### `SM-C03`: Multi-file summary (grader-like)
+
+One bullet per file of a folder with a per-bullet limit ('15 words max each').
+
+Workspace: `logs/db.txt`, `logs/lb.txt`, `logs/web.txt`
+
+1. `Summarize every file in the logs folder into reports/folder.txt: one bullet per file, 15 words max each.`  
+   Expect: status success; reports/folder.txt is exactly 3 bullet lines; every line of reports/folder.txt has at most 15 words
+
+Allowed changes: `reports/`
+
 ## CP2
 
 ### `GR-01`: Context within a session (grader-known)
@@ -1572,4 +1625,22 @@ Logs: cp3/gen_incident.py, seed 22, services gateway/orders/inventory/payments, 
 The gateway retried upstream: one req= has a first upstream_trace (connection reset, no hold) and a second one that waited on the hold and failed. The answer is the second trace.
 
 Logs: cp3/gen_incident.py, seed 23, services gateway/orders/inventory/payments, order ORD-77341. Graded per REPORT.json key (value and JSON type).
+
+### `DB-S31`: Debugging (grader-like)
+
+Verification on an unseen seed (31) of the independent generator.
+
+Logs: cp3/gen_incident.py, seed 31, services gateway/orders/inventory/payments, order ORD-77341. Graded per REPORT.json key (value and JSON type).
+
+### `DB-S32`: Debugging (grader-like)
+
+Verification on an unseen seed (32), renamed services.
+
+Logs: cp3/gen_incident.py, seed 32, services edge/checkout/stock/billing, order ORD-61007. Graded per REPORT.json key (value and JSON type).
+
+### `PG-W`: Programming (grader-like)
+
+The word-count practice task (wordstat.py, 4 requirements): a non-CSV program, used to re-time the programming loop with the self-review and probes.
+
+Prompt: the wordstat.py practice task (4 requirements), graded like the agent-dev live test.
 

@@ -208,9 +208,69 @@ def t_pg_best_version_restored_and_finish_gate():
     r = go(ws, prompt, [tc("write_file", path="tally.py", content=REF), tc("write_file", path="tally.py", content=broken),
                         tc("finish", message="a"), tc("finish", message="b"), tc("finish", message="c")])
     expect(r.status == "success", r.stdout)
-    expect(ws.read("tally.py") == REF, "best (compiling) version was not restored")
+    expect(ws.read("tally.py") == REF, "working version was not kept")
     obs = [m["content"] for q in SERVER.requests for m in q["body"]["messages"] if m["role"] == "tool"]
-    expect(any("SyntaxError" in o for o in obs), "compile error not reported")
+    # rewrite cap: a full rewrite of a working program is refused, so the broken version never lands
+    expect(any("already exists and works" in o for o in obs), "rewrite of a working program was not refused")
+
+
+def t_pg_rewrite_allowed_when_program_does_not_run():
+    # Rewrite cap escape hatch: a program that does not compile may be rewritten in full.
+    ws, prompt = prog_ws()
+    r = go(ws, prompt, [tc("write_file", path="tally.py", content="def main(:\n    pass\n"),
+                        tc("write_file", path="tally.py", content=REF)] + [tc("finish", message="done")] * 3)
+    expect(ws.read("tally.py") == REF, "rewrite of a non-compiling program was refused")
+
+
+def t_review_snapshot_restores_working_program():
+    # Item 9: an edit made during the self-review that breaks a command which passed before is undone.
+    ws, prompt = prog_ws()
+    old = '    if cmd == "count":\n        return "%d" % len(rows), 0'
+    assert old in REF
+    # finish #1 is refused for REF's known edge-probe problem, finish #2 starts the self-review
+    r = go(ws, prompt, [tc("write_file", path="tally.py", content=REF), tc("finish", message="done"),
+                        tc("finish", message="done"),
+                        tc("edit_file", path="tally.py", old=old, new='    if cmd == "count":\n        raise SystemExit(3)'),
+                        tc("finish", message="done")] + [tc("finish", message="done")] * 3)
+    obs = _observations()
+    expect("harness checks only ran the example commands" in obs, "self-review did not run")
+    expect("RESTORED automatically" in obs, "breaking review edit was not undone")
+    expect(ws.read("tally.py") == REF, "working program not restored")
+
+
+def t_review_skipped_when_time_is_short():
+    # Item 8: no self-review when the time left cannot cover it (here a 120 s budget).
+    ws, prompt = prog_ws()
+    r = go(ws, prompt, [tc("write_file", path="tally.py", content=REF), tc("finish", message="done")]
+           + [tc("finish", message="done")] * 3, env={"AGENT_TIME_BUDGET": "120"})
+    expect(r.status == "success", r.stdout)
+    expect("harness checks only ran the example commands" not in _observations(), "self-review ran without time")
+
+
+def t_probe_equals_form_and_missing_file():
+    # Item 10: `--file=PATH` must work like `--file PATH`; a missing file must exit non-zero with stderr text.
+    ws, prompt = prog_ws()
+    swallow = REF.replace('rows = load(opts.get("file") or "transactions.csv")',
+                          'try:\n        rows = load(opts.get("file") or "transactions.csv")\n'
+                          '    except OSError:\n        rows = []')
+    assert swallow != REF
+    go(ws, prompt, [tc("write_file", path="tally.py", content=mini(GOOD_OPTS, GOOD_SUM))]
+       + [tc("finish", message="done")] * 3)
+    expect("--name=value form" in _observations(), "--file=PATH form not checked")
+    ws, prompt = prog_ws()
+    go(ws, prompt, [tc("write_file", path="tally.py", content=swallow)] + [tc("finish", message="done")] * 3)
+    expect("a missing file must exit with a non-zero status" in _observations(), "missing-file exit not checked")
+
+
+def t_broken_edit_is_restored():
+    # Live (PG-O): an edit left no example command working and the model never recovered.
+    ws, prompt = prog_ws()
+    good = mini(GOOD_OPTS, GOOD_SUM)
+    r = go(ws, prompt, [tc("write_file", path="tally.py", content=good),
+                        tc("edit_file", path="tally.py", old="cmd, opts, pos = parse(sys.argv[1:])",
+                           new="raise SystemExit(5)")] + [tc("finish", message="done")] * 5)
+    expect("edit left no example command working; restored" in r.stderr, "broken edit not undone")
+    expect(ws.read("tally.py") == good, "working program not restored")
 
 
 def t_pg_hygiene_and_sandbox():
@@ -228,8 +288,7 @@ def t_pg_hygiene_and_sandbox():
         tc("finish", message="done")])
     expect(r.status == "success", r.stdout)
     obs = "\n".join(m["content"] for q in SERVER.requests for m in q["body"]["messages"] if m["role"] == "tool")
-    for want in ("outside the workspace", "only the deliverable", "scratch", "network tools are not allowed",
-                 "deleting outside the workspace is not allowed"):
+    for want in ("outside the workspace", "only the deliverable", "scratch", "command refused"):
         expect(want in obs or want.replace("outside the workspace", "escapes the workspace") in obs, "missing: %s" % want)
     expect(not os.path.exists(os.path.join(os.path.dirname(ws.dir), "escape.txt")), "escaped write")
     after = ws.snapshot()
@@ -375,8 +434,10 @@ def t_probe_file_option_after_positional():
     # each example with the default data file passed explicitly AFTER the arguments.
     ws, prompt = prog_ws()
     good = mini(GOOD_OPTS, GOOD_SUM)
+    # rewrite cap: a running program is fixed with edit_file, not a second full write
     r = go(ws, prompt, [tc("write_file", path="tally.py", content=mini(BAD_OPTS, GOOD_SUM)),
-                        tc("write_file", path="tally.py", content=good)] + [tc("finish", message="Done.")] * 5)
+                        tc("edit_file", path="tally.py", old=BAD_OPTS, new=GOOD_OPTS)]
+           + [tc("finish", message="Done.")] * 5)
     expect("must work in any position" in _observations(), "option-placement bug not reported")
     expect(ws.read("tally.py") == good, "final program wrong")
 
@@ -437,7 +498,8 @@ def t_probe_default_text_file_placement():
     ws = Workspace({"book.txt": "the cat\\na dog\\nthe end\\n", "TASK.md": WORDS_PROMPT})
     good = WORDS_PROG.replace("OPTION_RULE", GOOD_OPTS)
     r = go(ws, WORDS_PROMPT, [tc("write_file", path="wordstat.py", content=WORDS_PROG.replace("OPTION_RULE", BAD_OPTS)),
-                              tc("write_file", path="wordstat.py", content=good)] + [tc("finish", message="Done.")] * 5)
+                              tc("edit_file", path="wordstat.py", old=BAD_OPTS, new=GOOD_OPTS)]
+           + [tc("finish", message="Done.")] * 5)
     expect("must work in any position" in _observations(), "placement bug with a text default file not reported")
     expect(ws.read("wordstat.py") == good, "final program wrong")
 
@@ -468,7 +530,8 @@ def t_probe_case_insensitive_category():
     good = mini(GOOD_OPTS, GOOD_SUM)
     bad = good.replace("c == str(cat).lower()", "c == str(cat)")   # compares the raw (upper-case) value
     r = go(ws, prompt, [tc("write_file", path="tally.py", content=bad),
-                        tc("write_file", path="tally.py", content=good)] + [tc("finish", message="Done.")] * 5)
+                        tc("edit_file", path="tally.py", old="c == str(cat)", new="c == str(cat).lower()")]
+           + [tc("finish", message="Done.")] * 5)
     expect("letter case must not change the result" in _observations(), "case-sensitivity bug not reported")
     expect(ws.read("tally.py") == good, "final program wrong")
 

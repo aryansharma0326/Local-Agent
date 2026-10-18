@@ -67,6 +67,12 @@ debug("DB-B03", "stress", "The gateway retried upstream: one req= has a first up
 
 def setup(case, ws, fixtures_dir):
     """Populate ``ws``; return (prompt, answer key or None)."""
+    if case["kind"] == "words":
+        with open(os.path.join(ws, "book.txt"), "w") as f:
+            f.write(BOOK)
+        with open(os.path.join(ws, "TASK.md"), "w") as f:
+            f.write(WORDS_PROMPT)
+        return WORDS_PROMPT, None
     if case["kind"] == "prog":
         p = prog_specs.prompt(case["variant"])
         with open(os.path.join(ws, "transactions.csv"), "wb") as f:
@@ -93,6 +99,8 @@ def setup(case, ws, fixtures_dir):
 
 def grade(case, ws, key):
     """-> (points, max_points, [(name, ok, detail)])"""
+    if case["kind"] == "words":
+        return _wordstat_grade(ws)
     if case["kind"] == "prog":
         res = prog_specs.grade(case["variant"], ws)
         reqs = prog_specs.score(res)
@@ -115,3 +123,85 @@ def grade(case, ws, key):
         rows.append(("no extra keys", False, "extra keys %s" % extra))
     pts = sum(1 for k, ok, _ in rows if ok and k in key)
     return pts, len(key), rows
+
+# ---------------------------------------------------------------- word-count task (agent-dev practice task)
+WORDS_PROMPT = """# Task: implement `wordstat.py`
+
+Write a command-line tool `wordstat.py` (Python 3, standard library only) in the current directory.
+It reports statistics about a UTF-8 text file. A sample file, `book.txt`, is provided.
+
+## Invocation
+
+```
+python3 wordstat.py <command> [arguments] [--file PATH]
+```
+
+* `--file PATH` selects the text file. Default: `book.txt`. Options may appear anywhere after the command.
+
+## Requirements
+
+A *word* is a maximal run of letters (a-z, A-Z) and apostrophes; words are compared case-insensitively and
+printed in lowercase.
+
+1. **`lines`** — `python3 wordstat.py lines` prints the number of lines in the file, e.g. `120`.
+2. **`words`** — `python3 wordstat.py words` prints the number of words.
+3. **`top N`** — `python3 wordstat.py top N` prints the N most frequent words as `WORD<TAB>COUNT`, most frequent
+   first; equal counts are sorted alphabetically. Fewer than N distinct words: print all.
+4. **`find WORD`** — `python3 wordstat.py find WORD` prints the 1-based numbers of the lines containing WORD (as a
+   whole word, case-insensitive), comma-separated on one line, e.g. `3,17,40`; if none, print `none`.
+
+When you are done, `wordstat.py` must be in the current directory.
+"""
+
+BOOK = "".join(["The cat sat on the mat.\n", "A dog, a cat and THE bird!\n", "\n",
+                "It's the cat's toy; it's not the dog's.\n"] * 30 + ["Zebra quietly ended the story.\n"])
+
+
+
+
+def _wordstat_grade(ws):
+    import re as _re
+
+    def words(text):
+        return [w.lower() for w in _re.findall(r"[A-Za-z']+", text)]
+
+    def out(*argv):
+        p = subprocess.run([sys.executable, "wordstat.py"] + list(argv), cwd=ws, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=20)
+        return p.returncode, p.stdout.decode("utf-8", "replace")
+    rows = []
+    if not os.path.exists(os.path.join(ws, "wordstat.py")):
+        return 0, 4, [("wordstat.py exists", False, "missing")]
+    w = words(BOOK)
+    counts = {}
+    for x in w:
+        counts[x] = counts.get(x, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    lines = BOOK.split("\n")
+    hits = [str(i + 1) for i, line in enumerate(lines) if "zebra" in words(line)]
+    with open(os.path.join(ws, "mini.txt"), "w") as f:
+        f.write("one two\nTwo three\n")
+    checks = [
+        ("req 1 lines", [out("lines")], [(0, "%d\n" % BOOK.count("\n"))]),
+        ("req 2 words", [out("words")], [(0, "%d\n" % len(w))]),
+        ("req 3 top", [out("top", "5"), (out("top", "999")[0], str(out("top", "999")[1].count("\n")))],
+         [(0, "".join("%s\t%d\n" % kv for kv in ranked[:5])), (0, str(len(ranked)))]),
+        ("req 4 find", [out("find", "ZEBRA"), out("find", "unicorn"), out("find", "two", "--file", "mini.txt")],
+         [(0, ",".join(hits) + "\n"), (0, "none\n"), (0, "1,2\n")]),
+    ]
+    pts = 0
+    for name, got, want in checks:
+        ok = got == want
+        pts += ok
+        rows.append((name, ok, "got %r want %r" % ([g[1][:80] for g in got], [x[1][:80] for x in want])))
+    os.remove(os.path.join(ws, "mini.txt"))
+    return pts, 4, rows
+
+
+debug("DB-S31", "grader-like", "Verification on an unseen seed (31) of the independent generator.", seed=31)
+debug("DB-S32", "grader-like", "Verification on an unseen seed (32), renamed services.", seed=32,
+      names=("edge", "checkout", "stock", "billing"), order="ORD-61007")
+
+CASES.append(dict(id="PG-W", cp="cp3", group="programming", tag="grader-like", kind="words",
+                  attack="The word-count practice task (wordstat.py, 4 requirements): a non-CSV program, used to "
+                         "re-time the programming loop with the self-review and probes.", session="3990"))

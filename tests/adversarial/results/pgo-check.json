@@ -1,0 +1,113 @@
+{
+ "label": "pgo-check",
+ "submission": "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1/.claude/worktrees/agentic-ai-e2e-test-cases-c0723a",
+ "updated": "2026-10-17 21:52:45",
+ "results": [
+  {
+   "id": "PG-O",
+   "cp": "cp3",
+   "group": "programming",
+   "tag": "grader-like",
+   "attack": "The official prompt word for word (7-12 hidden); 40k rows with quoted commas, negatives, mixed-case categories, a category with '&' and a forced top-N tie. Graded on 1-6.",
+   "kind": "prog",
+   "variant": "O",
+   "session": "3000",
+   "files": [],
+   "verdict": "FAIL",
+   "attempts": [
+    {
+     "passed": false,
+     "infra": false,
+     "points": 5,
+     "max": 6,
+     "prompt": "# Task: implement `tally.py`\n\nWrite a command-line tool `tally.py` (Python 3, standard library only) in the current directory.\nIt summarises spending stored in a CSV file. A sample data file, `transactions.csv`, is provided\n(it is large: about 40,000 rows).\n\n## Invocation\n\n```\npython3 tally.py <command> [arguments] [--file PATH] [--json]\n```\n\n* `--file PATH` selects the CSV file. Default: `transactions.csv` in the current directory.\n* Options may appear anywhere after the command name.\n\n## CSV format\n\nThe first line is a header: `date,description,category,amount`. Every following line is one transaction.\nFields follow normal CSV quoting rules (a field may be wrapped in double quotes and contain commas).\n`amount` is a decimal number of dollars (it may be negative, e.g. a refund).\n\n## Requirements\n\nEvery requirement below is checked by an automated test. Output must match exactly\n(no extra lines, no extra spaces). All money values are printed with exactly two decimals\nand no thousands separator, e.g. `1234.50`, `-3.00`.\n\n1. **`count`** \u2014 `python3 tally.py count` prints the number of valid transactions, e.g. `39876`.\n2. **`total`** \u2014 `python3 tally.py total` prints the sum of all amounts, e.g. `1834512.07`.\n3. **`total --category NAME`** (an option of the `total` command, not a separate command) \u2014 `python3 tally.py total --category NAME` prints the sum of amounts of\n   transactions whose category equals NAME. The comparison is case-insensitive.\n4. **`top N`** \u2014 `python3 tally.py top N` prints the N categories with the largest total amount, one per line,\n   as `CATEGORY<TAB>AMOUNT`. Sort by amount descending; if two amounts are equal, sort those categories\n   alphabetically ascending. If there are fewer than N categories, print all of them.\n5. **category case** \u2014 categories are case-insensitive everywhere: `Food`, `FOOD` and `food` are the\n   same category. Whenever a category name is printed, it is printed in lowercase.\n6. **`range --from D1 --to D2`** \u2014 `python3 tally.py range --from YYYY-MM-DD --to YYYY-MM-DD` considers transactions whose\n   date is between the two dates, both ends inclusive, and prints one line `count=K total=X.XX`.\n\n7\u201312. *(hidden)*\n\nWhen you are done, `tally.py` must be in the current directory.\nGrading: each of the 12 requirements is checked by a hidden test and is worth 1 point.\n",
+     "result": {
+      "code": 0,
+      "stdout": "{\"status\": \"success\", \"message\": \"Stopped early (repeated actions). (harness checks: 0/5 example commands ran cleanly) (restored best version v2)\"}\n",
+      "stderr_tail": "[agent    0.0s] task kind: programming; deadline 285s; session: 3000\n[agent    0.0s] session 3000: 0 earlier turn(s)\n[agent   51.7s] calls_used=1 model call ok in 51.5s (finish=tool_calls, completion_tokens=1268)\n[agent   53.3s] tool write_file {\"path\": \"tally.py\", \"content\": \"import csv, sys, json\\nfrom datetime import date\\nfrom decimal import Decimal, ...\"} -> OK: wrote tally.py (139 lines, 4333 characters) |  | HARNESS CHECK of tally.py (version 1): | PROBLEMS TO FIX (most important  (1.51s)\n[agent   59.1s] calls_used=2 model call ok in 5.9s (finish=tool_calls, completion_tokens=117)\n[agent   60.6s] tool edit_file {\"path\": \"tally.py\", \"old\": \"        total = sum(row[3] for row in rows)\\n        if opts.get(\\\"--json\\\"):\", \"new\": \"        category_filter = opts.get(\\\"--category\\\", None)\\n        if category_fi... -> OK: edited tally.py (1 replacement) |  | HARNESS CHECK of tally.py (version 2): | PROBLEMS TO FIX (most important first; fix t (1.51s)\n[agent   69.2s] calls_used=3 model call ok in 8.6s (finish=tool_calls, completion_tokens=185)\n[agent   69.2s] tool edit_file {\"path\": \"tally.py\", \"old\": \"        category_filter = opts.get(\\\"--category\\\", None)\\n        if category_fi...\", \"new\": \"        category_filter = opts.get(\\\"--category\\\", None)\\n        if category -> OK: edited tally.py (1 replacement) |  | HARNESS CHECK of tally.py (version 3): | COMPILE FAILED: SyntaxError in tally.py line (0.01s)\n[agent   75.0s] calls_used=4 model call ok in 5.8s (finish=tool_calls, completion_tokens=121)\n[agent   75.0s] tool edit_file {\"path\": \"tally.py\", \"old\": \"        if opts.get(\\\"--json\\\"):\\n            print(json.dumps({\\\"total\\\": float(t...\", \"new\": \"        if opts.get(\\\"--json\\\"):\\n            print(json.dumps({\\\"total\\\":  -> ERROR: 'old' text not found in tally.py - but the file already contains your 'new' text: this edit was ALREADY APPLIED.  (0.00s)\n[agent   80.8s] calls_used=5 model call ok in 5.8s (finish=tool_calls, completion_tokens=121)\n[agent   80.8s] tool edit_file {\"path\": \"tally.py\", \"old\": \"        if opts.get(\\\"--json\\\"):\\n            print(json.dumps({\\\"total\\\": float(t...\", \"new\": \"        if opts.get(\\\"--json\\\"):\\n            print(json.dumps({\\\"total\\\":  -> ERROR: 'old' text not found in tally.py - but the file already contains your 'new' text: this edit was ALREADY APPLIED.  (0.00s)\n[agent   86.6s] calls_used=6 model call ok in 5.8s (finish=tool_calls, completion_tokens=121)\n[agent   86.6s] tool edit_file {\"path\": \"tally.py\", \"old\": \"        if opts.get(\\\"--json\\\"):\\n            print(json.dumps({\\\"total\\\": float(t...\", \"new\": \"        if opts.get(\\\"--json\\\"):\\n            print(json.dumps({\\\"total\\\":  -> ERROR: 'old' text not found in tally.py - but the file already contains your 'new' text: this edit was ALREADY APPLIED.  (0.00s)\n[agent   92.4s] calls_used=7 model call ok in 5.8s (finish=tool_calls, completion_tokens=121)\n[agent   98.0s] calls_used=8 model call ok in 5.6s (finish=tool_calls, completion_tokens=121)\n[agent  103.9s] calls_used=9 model call ok in 5.8s (finish=tool_calls, completion_tokens=121)\n[agent  109.7s] calls_used=10 model call ok in 5.8s (finish=tool_calls, completion_tokens=121)\n[agent  115.3s] calls_used=11 model call ok in 5.7s (finish=tool_calls, completion_tokens=121)\n[agent  115.3s] tool edit_file {\"path\": \"tally.py\", \"old\": \"        if opts.get(\\\"--json\\\"):\\n            print(json.dumps({\\\"total\\\": float(t...\", \"new\": \"        if opts.get(\\\"--json\\\"):\\n            print(json.dumps({\\\"total\\\":  -> ERROR: 'old' text not found in tally.py - but the file already contains your 'new' text: this edit was ALREADY APPLIED.  (0.00s)\n[agent  115.3s] wrap-up: repeated actions\n[agent  115.3s] restored best version v2 of tally.py (score 19 > 0)\n[agent  115.3s] restored best version v2 of tally.py (score 19 > 0)\n[agent  115.3s] calls_used=11 (total attempts 11)\n[agent  115.3s] result: success\n",
+      "elapsed": 115.4,
+      "status": "success",
+      "message": "Stopped early (repeated actions). (harness checks: 0/5 example commands ran cleanly) (restored best version v2)",
+      "contract_error": null,
+      "calls": 11
+     },
+     "info": {
+      "extra_files": []
+     },
+     "checks": [
+      {
+       "desc": "req 1: count",
+       "ok": true,
+       "detail": "args=['count'] want='40001\\n'/exit 0 got='40001\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 2: total",
+       "ok": true,
+       "detail": "args=['total'] want='4549918.97\\n'/exit 0 got='4549918.97\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 3: total --category FOOD (upper)",
+       "ok": true,
+       "detail": "args=['total', '--category', 'FOOD'] want='460518.60\\n'/exit 0 got='460518.60\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 3: total --category 'Home & Garden'",
+       "ok": true,
+       "detail": "args=['total', '--category', 'Home & Garden'] want='442847.06\\n'/exit 0 got='442847.06\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 3: total --category unknown",
+       "ok": false,
+       "detail": "args=['total', '--category', 'nonexistent'] want='0.00\\n'/exit 0 got=''/exit 1 stderr='Traceback (most recent call last):\\n  File \"/private/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_ws_tmijkzvg/tally.py\", line 142, in <module>\\n    main(sy'"
+      },
+      {
+       "desc": "req 4: top 3",
+       "ok": true,
+       "detail": "args=['top', '3'] want='books\\t465656.40\\ngifts\\t465656.40\\nfood\\t460518.60\\n'/exit 0 got='books\\t465656.40\\ngifts\\t465656.40\\nfood\\t460518.60\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 4: top 100 (fewer categories, forced tie books/gifts)",
+       "ok": true,
+       "detail": "args=['top', '100'] want='books\\t465656.40\\ngifts\\t465656.40\\nfood\\t460518.60\\nhealth\\t460253.77\\nentertainment\\t459180.21\\nrent\\t453673.52\\ntravel\\t449665.56\\ntransport\\t446756.75\\nutilities\\t445710.70\\n'/exit 0 got='books\\t465656.40\\ngifts\\t465656.40\\nfood\\t460518.60\\nhealth\\t460253.77\\nentertainment\\t459180.21\\nrent\\t453673.52\\ntravel\\t449665.56\\ntransport\\t446756.75\\nutilities\\t445710.70\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 5: lowercase output (small file)",
+       "ok": true,
+       "detail": "args=['top', '5', '--file', '/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_5kawzcex/case.csv'] want='transport\\t25.50\\nfood\\t8.50\\n'/exit 0 got='transport\\t25.50\\nfood\\t8.50\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 5: category MiXeD",
+       "ok": true,
+       "detail": "args=['total', '--category', 'TrAnSpOrT', '--file', '/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_5kawzcex/case.csv'] want='25.50\\n'/exit 0 got='25.50\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 6: range",
+       "ok": true,
+       "detail": "args=['range', '--from', '2025-05-17', '--to', '2025-10-01'] want='count=10036 total=1141965.23\\n'/exit 0 got='count=10036 total=1141965.23\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 6: range single day",
+       "ok": true,
+       "detail": "args=['range', '--from', '2025-05-17', '--to', '2025-05-17'] want='count=73 total=8130.11\\n'/exit 0 got='count=73 total=8130.11\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 6: range options reversed",
+       "ok": true,
+       "detail": "args=['range', '--to', '2025-10-01', '--from', '2025-05-17'] want='count=10036 total=1141965.23\\n'/exit 0 got='count=10036 total=1141965.23\\n'/exit 0 stderr=''"
+      },
+      {
+       "desc": "req 6: option before argument",
+       "ok": true,
+       "detail": "args=['total', '--file', '/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_5kawzcex/case.csv', '--category', 'food'] want='8.50\\n'/exit 0 got='8.50\\n'/exit 0 stderr=''"
+      }
+     ],
+     "workspace": null,
+     "seconds": 117.2
+    }
+   ],
+   "fail_count": 1,
+   "runs": 1,
+   "stability": "deterministic"
+  }
+ ]
+}

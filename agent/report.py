@@ -251,6 +251,13 @@ class Report:
                                 "up is a symptom; use the culprit class spelled exactly as logged."
                                 % (v, cands[0], (" (older linked traces: %s)" % ", ".join(cands[1:4])) if cands[1:]
                                    else ""))
+                near = self._near_miss(key, v)
+                if near:
+                    return ("NEAR-MISS: %r differs by one or two characters from %r, which the request's own linked "
+                            "log entries contain - a look-alike decoy. Copy %r exactly." % (v, near, near))
+                when = self._timestamp_problem(key, v)
+                if when:
+                    return when
                 if self.anchors and len(v) >= 3 and v not in self.linked_values():
                     return ("UNLINKED (verify): %r occurs in the logs, but never in the same log entry as the failed "
                             "request's identifiers found so far (%s) - it may belong to another request/worker (a "
@@ -270,6 +277,65 @@ class Report:
                             "logged (a JSON string)" % (glued.group(0), v))
             return "ok" if self.int_in_evidence(v) else "WARNING: the number %d does not appear in the logs" % v
         return "WARNING: unusual JSON type %s" % type(v).__name__
+
+    _EVENT = re.compile(r"\b(queued|created|failed|canceled|cancelled|received|started|completed|confirmed|rejected|"
+                        r"timed out|gave up|retried|scheduled|acquired|released|sent|processed)\b", re.I)
+
+    def _linked_records(self):
+        linked = [x for x in self.linked_values() if len(x) >= 4]
+        return [r for recs in self.records() for r in recs if any(x in r for x in linked)]
+
+    def _near_miss(self, key, v):
+        """A value one or two characters away from an identifier/class in the request's linked entries
+        (SkuIndexRebuilders vs SkuIndexRebuilder) is a look-alike decoy."""
+        if len(v) < 5 or not (self.is_component_key(key) or re.search(r"(_id|_ids|^id|worker|hold|trace|req|"
+                                                                       r"intent|class|component)", key, re.I)):
+            return None
+        tokens = set()
+        for r in self._linked_records():
+            tokens.update(re.findall(r"[A-Za-z_][\w$#-]{3,}", r))
+        tokens.update(self.cause_candidates())
+        if v in tokens:
+            return None
+        best = None
+        for tok in tokens:
+            if abs(len(tok) - len(v)) <= 2 and tok[:2].lower() == v[:2].lower():
+                d = _edit_distance(tok, v, 2)
+                if 1 <= d <= 2 and (best is None or d < best[0]):
+                    best = (d, tok)
+        return best[1] if best else None
+
+    def _timestamp_problem(self, key, v):
+        """A timestamp must come from the request's own log line for the event the key names
+        (the QUEUED line, not the CREATED line next to it)."""
+        if not re.search(r"(_at$|_ts$|time|timestamp|when)", key, re.I) or not re.search(r"\d", v):
+            return None
+        linked = [x for x in self.linked_values() if len(x) >= 4 and x != v]
+        lines = [r.split("\n", 1)[0] for recs in self.records() for r in recs]
+        own = [l for l in lines if v in l]
+        own_linked = [l for l in own if any(x in l for x in linked)]
+        if own and not own_linked and linked:
+            return ("CHECK: no log line with timestamp %r mentions the request's identifiers (%s) - take the "
+                    "timestamp from the request's own line" % (v, ", ".join(sorted(linked)[:4])))
+        m = self._EVENT.search(self.desc.get(key, "") + " " + key.replace("_", " "))
+        if not m or not own_linked:
+            return None
+        ev = m.group(1).lower()
+        if any(ev in l.lower() for l in own_linked):
+            return None
+        shape = re.sub(r"\d", r"\\d", re.escape(v))
+        shared = [x for x in linked if any(x in l for l in own_linked)]
+        if not shared:
+            return None
+        # anchor on the most specific identifier of the value's own line (a hold id, not a worker name)
+        anchor = min(shared, key=lambda x: sum(1 for l in lines if x in l))
+        for l in lines:
+            if ev in l.lower() and anchor in l:
+                t = re.search(shape, l)
+                if t and t.group(0) != v:
+                    return ("CHECK: the key asks for the %s line, but %r is on a different line of this request. "
+                            "The request's %s line has timestamp %r - copy it exactly." % (ev, v, ev, t.group(0)))
+        return None
 
     def problems(self):
         out = []
@@ -298,3 +364,18 @@ class Report:
             log("report file invalid: %s" % e)
             return False
         return isinstance(data, dict) and list(data) == self.order
+
+
+def _edit_distance(a, b, cap):
+    """Levenshtein distance, stopping early above `cap`."""
+    if a == b:
+        return 0
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        if min(cur) > cap:
+            return cap + 1
+        prev = cur
+    return prev[-1]

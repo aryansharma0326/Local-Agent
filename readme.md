@@ -42,6 +42,11 @@ agent/
   workspace.py          change audit: backup at start, restore unexpected changes at the end
   errors.py             AgentError
 tests/                  offline + live test suites, fixtures and generators (see "Tests")
+  story_all.sh          one connected story through all three checkpoints (see "Trying it by hand")
+  smoke_all.py          one-command check of all three checkpoints, one step per objective
+  heldout.py            33 held-out black-box conversations
+  adversarial/          grader-style adversarial suite: cases_cp1/2/3.py, runner.py, make_report.py,
+                        cp3/ generators and reference tally, CASES.md (catalog), REPORT.md (results)
 scripts/make_submission.sh  builds dist/hw1_submission.zip after pre-package checks
 docs/                   the assignment texts (docs/assignment/CP1-3.md) and the engineering spec
 AUDIT.md, PLAN.md       requirement traceability matrix and plan
@@ -74,6 +79,120 @@ OPENAI_BASE_URL="https://llm.montii.me/v1" MODEL="Qwen/Qwen3-14B" QWEN_API_KEY="
 Stdout is always exactly one JSON object, `{"status": "success"|"error", "message": "..."}`, followed by a
 newline. The exit code is 0 if and only if the status is `success`. Diagnostics, including a
 `calls_used=N` line, go to stderr.
+
+## Trying it by hand (for graders)
+
+### One story through all three checkpoints
+
+```bash
+bash tests/story_all.sh
+```
+
+This runs one connected scenario in a single workspace and a single session (77). It takes 5-7 minutes and
+prints each prompt, the agent's JSON reply and PASS/FAIL.
+
+1. A statement-only first turn: "My team lead is Priya Raman." (CP2 context)
+2. A create that uses that fact: "...a note addressed to my team lead by name." Then a read-and-answer, a
+   multi-file summary and a delete. (CP1)
+3. A CSV total, then the follow-up "What is the average?", then "Save a copy of the table", then a row
+   removal. (CP2 CSV, where each follow-up relies on an earlier turn)
+4. "Who is my team lead?" in session 78 (it must not know) and again in session 77 (it must). (CP2 isolation)
+5. The official `tally.py` task (requirements 1-6) and an incident-log debugging task (12 REPORT.json
+   keys). Each runs in its own sub-folder, the way the grader runs them. (CP3)
+
+### One command, one step per objective
+
+`tests/smoke_all.py` runs one prompt for each main objective of every checkpoint, through `run_agent.sh`
+exactly as the grader does. Each step runs in a fresh temp workspace, and the script prints PASS/FAIL per
+step. It reads the key from `$QWEN_API_KEY` or `~/.qwen_key`.
+
+```bash
+python3 tests/smoke_all.py            # CP1 + CP2 + CP3, about 5 minutes (CP3 is most of it)
+python3 tests/smoke_all.py --no-cp3   # CP1 + CP2 only, about 1 minute
+```
+
+| Step | Checkpoint objective |
+|---|---|
+| create, delete, read-and-answer, multi-file summary | CP1: the four task types |
+| statement turn, recall in the same session, the same question in another session | CP2: context within a session, and session isolation |
+| CSV total, follow-up "What is the average?", "Save a copy of the table", remove rows | CP2: CSV operations, including follow-ups that use earlier turns |
+| the official `tally.py` prompt on a generated data file, graded on requirements 1-6 | CP3: programming |
+| an incident with four service logs, graded on all 12 REPORT.json keys (at least 11 must be right) | CP3: debugging |
+
+### Prompt by prompt in a terminal
+
+Define a shortcut once per terminal. Use the submission folder's path, and keep the key outside the
+submission:
+
+```bash
+agent() { OPENAI_BASE_URL="https://llm.montii.me/v1" MODEL="Qwen/Qwen3-14B" QWEN_API_KEY="$(cat ~/.qwen_key)" \
+  AGENT_STATE_DIR="$HOME/agent_playground_state" bash "$SUBMISSION_DIR/run_agent.sh" "$@"; echo "exit=$?"; }
+mkdir -p ~/agent_playground/all && cd ~/agent_playground/all   # the agent's workspace is the current folder
+```
+
+The trailing number is the session ID. Leave it out for independent CP1-style calls. Calls that share a
+number form one conversation, and a different number is a separate conversation.
+
+**CP1** (no number):
+
+```bash
+printf 'old\n' > old.txt; printf 'Blue notebooks: 12\nRed notebooks: 7\n' > inventory.txt; mkdir -p logs
+printf '09:02 Checkout latency alert fired.\n' > logs/start.txt
+printf '09:44 Root cause: misconfigured load balancer health check; fixed.\n' > logs/resolution.txt
+agent "Create notes/todo.txt containing: buy milk"
+agent "Delete old.txt."
+agent "Read inventory.txt. How many blue notebooks are currently in stock?"
+agent "Use logs/start.txt and logs/resolution.txt to create reports/summary.txt with a summary under 50 words."
+```
+
+Expected: `notes/todo.txt` holds `buy milk`; `old.txt` is gone; the answer is 12; `reports/summary.txt` is
+under 50 words and names the load balancer.
+
+**CP2** (sessions 7 and 8):
+
+```bash
+printf 'month,revenue\nJanuary,120\nFebruary,180\n' > sales.csv
+printf 'id,status\n1,shipped\n2,cancelled\n3,pending\n' > orders.csv
+agent "My project code name is Cedar." 7
+agent "What is my project code name?" 7
+agent "What is my project code name?" 8
+agent "Read sales.csv and tell me the total of the revenue column." 7
+agent "What is the average?" 7
+agent "Save a copy of the table as reports/sales_copy.csv." 7
+agent "In orders.csv, remove every row whose status is cancelled, and save the result as active.csv." 7
+```
+
+Expected:
+- session 7 answers Cedar, and session 8 does not know it;
+- the total is 300 and the average is 150;
+- `reports/sales_copy.csv` equals `sales.csv`;
+- `active.csv` keeps rows 1 and 3.
+
+**CP3 programming**, about 2-4 minutes. `$SUBMISSION_DIR/tests/adversarial/cp3` holds the test generators;
+the agent never sees them.
+
+```bash
+mkdir -p ~/agent_playground/prog && cd ~/agent_playground/prog
+python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import prog_specs; open('transactions.csv','wb').write(prog_specs.generate('O', n=4000)); open('TASK.md','w').write(prog_specs.prompt('O'))" "$SUBMISSION_DIR/tests/adversarial/cp3"
+agent "$(cat TASK.md)" 3001
+python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import prog_specs; print(prog_specs.score(prog_specs.grade('O','.')))" "$SUBMISSION_DIR/tests/adversarial/cp3"
+```
+
+Expected: requirements 1-6 all `True`.
+
+**CP3 debugging**, about 1-3 minutes. The answer key is written one folder up, outside the agent's
+workspace.
+
+```bash
+mkdir -p ~/agent_playground/debug && cd ~/agent_playground/debug
+python3 -c "import sys, json; sys.path.insert(0, sys.argv[1]); import gen_incident; k,_=gen_incident.write(41,'.'); json.dump(k, open('../answer_key.json','w'), indent=1)" "$SUBMISSION_DIR/tests/adversarial/cp3"
+agent "$(cat TASK.md)" 3002
+python3 -c "import json; k=json.load(open('../answer_key.json')); r=json.load(open('REPORT.json')); [print('ok ' if r.get(x)==v else 'BAD', x, r.get(x), '| want', v) for x,v in k.items()]"
+```
+
+Expected: every line starts with `ok`.
+
+To see what the agent did, add `2> agent.log` to any call and read the log.
 
 ## Environment variables
 
@@ -205,7 +324,10 @@ Every request sends `"chat_template_kwargs": {"enable_thinking": false}`. Thinki
 | `python3 tests/live_cp3.py debug --seeds 1,2 --scenarios basic,retry,decoy_ids,decoy_class` | yes | CP3 debugging generator runs, per-key accuracy | about 1 min per case |
 | `python3 tests/live_cp3.py prog --variants A,B,C --seeds 1` | yes | CP3 programming spec variants, graded per requirement | 1–4 min per case |
 | `bash tests/run_live.sh --reps 5 --only cp1,cp2,cp3` | yes | the release-gate catalog with repetitions (`--backend openrouter\|local`, `--delay S`) | long |
-| `python3 tests/adversarial/runner.py --submission . --label NAME [--only cp2,CX-12]` | yes | adversarial grader-style suite: 111 cases including the four failed hidden CP2 cases, independent CP3 log/spec generators, and reruns of failures; `make_report.py` writes `REPORT.md` | about 40 min |
+| `bash tests/story_all.sh` | yes | one connected story through CP1, CP2 (context and isolation) and CP3 in a single session, PASS/FAIL per step | 5-7 min |
+| `python3 tests/smoke_all.py [--no-cp3]` | yes | one prompt per main objective of CP1, CP2 and CP3, with PASS/FAIL per step (see "Trying it by hand") | about 5 min |
+| `python3 tests/adversarial/runner.py --submission . --label NAME [--only cp2,CX-12]` | yes | adversarial grader-style suite: 155 cases (65 CP1, 76 CP2 conversations, 14 CP3 runs), including the four failed hidden CP2 cases, independent CP3 log/spec generators, and reruns of failures; `make_report.py` writes `tests/adversarial/REPORT.md` | about 70 min |
+| `AGENT_UNDER_TEST=$PWD/run_agent.sh python3 tests/heldout.py --reps 3` | yes | 33 held-out conversations, written after development and never tuned on: statement-shaped facts and requests, CSV, CP1 corner cases | about 25 min |
 
 The live tests read the key from `$QWEN_API_KEY` or `~/.qwen_key`. The key is never stored in the repository,
 and a static test scans for it.
@@ -226,11 +348,92 @@ Fixtures and expected results:
 - **Local Ollama/vLLM**: `OPENAI_BASE_URL=http://localhost:11434/v1 MODEL=qwen3:14b` (an empty key is fine on
   localhost). Add `AGENT_NO_THINK_SUFFIX=1` if the backend ignores `chat_template_kwargs`.
 
+## Test results
+
+Measured on 2026-10-17 on the final code, with the course endpoint (`Qwen/Qwen3-14B`) on macOS. Every live
+run uses a fresh workspace and a fresh session store per case.
+
+| Suite | Result |
+|---|---|
+| Offline (`bash tests/run_offline.sh`: static, unit, mock end-to-end, fault injection) | **503/503** |
+| Project live suite (`tests/test_live.py`, CP1 + CP2) | **99/99** |
+| Held-out set (`tests/heldout.py --reps 3`, 33 conversations written after development) | **33/33**; a conversation counts only if all 3 reps pass |
+| Adversarial suite, CP1 + CP2 (`tests/adversarial`, 141 cases, failures rerun twice) | **141/141** on the first run, no flaky cases |
+| The four failed hidden CP2 cases from the hw1-2 report (GR-01 to GR-04) | **4/4** |
+| CP3 debugging: audit generator seeds 21 and 22, every scenario (`tests/live_cp3.py debug`) | **12/12** and **12/12** |
+| CP3 debugging: independent generator (DB-1 to DB-4, DB-B02, unseen seeds 31 and 32) | **12/12** on each |
+| CP3 debugging: hard variants DB-B01 (non-lock cause) and DB-B03 (retried upstream call) | 11/12 and 10/12 |
+| CP3 programming: official `tally.py` prompt (PG-O), 5 runs | **6/6 on all 5**, 138-220 s |
+| CP3 programming: `wordstat.py` practice task (PG-W), 5 runs | 4/4 on 3 runs, 3/4 on 2 (`find WORD --file PATH`), 164-242 s |
+| CP3 programming: invented hidden-requirement variants D / E / F | 10/12, 1/12, 9/12 (model-capability limits, see below) |
+
+Full per-case details, including reproduction commands and root-cause notes for every failure found during
+development, are in `tests/adversarial/REPORT.md`. The case catalog is in `tests/adversarial/CASES.md`.
+
+### `bash tests/story_all.sh` (one story through all three checkpoints)
+
+```
+== CP2 context: a fact stated in a statement-only first turn
+   PASS statement turn is acknowledged
+== CP1 create (uses the earlier fact)
+   PASS memo.txt names the team lead
+== CP1 read and answer
+   PASS answer is 12 and the file is unchanged
+== CP1 multi-file summary
+   PASS summary exists, under 50 words, names the cause
+== CP1 delete
+   PASS old.txt gone, other files kept
+== CP2 CSV with follow-ups that rely on earlier turns
+   PASS total is 300
+   PASS follow-up average is 150
+   PASS copy equals sales.csv
+   PASS active.csv keeps rows 1 and 3, orders.csv unchanged
+== CP2 session isolation
+   PASS session 78 does not know the team lead
+   PASS session 77 still remembers
+== CP3 programming: the official tally.py task (requirements 1-6 graded)
+   tally.py requirements passed: 6/6
+   PASS tally.py passes requirements 1-6
+== CP3 debugging: trace one failed request across four logs into REPORT.json
+   REPORT.json keys correct: 12/12
+   PASS at least 11 of 12 keys correct
+13 passed, 0 failed
+```
+
+### `python3 tests/smoke_all.py` (one step per objective)
+
+```
+PASS  CP1  create a file                      exit=0   4.7s  Created notes/todo.txt with the content 'buy milk'.
+PASS  CP1  delete a file                      exit=0   3.7s  Deleted old.txt.
+PASS  CP1  read and answer                    exit=0   5.2s  There are 12 blue notebooks currently in stock.
+PASS  CP1  multi-file summary                 exit=0   8.8s  Created reports/summary.txt with a summary under 50 words.
+PASS  CP2  statement turn (memory)            exit=0   2.3s  Noted: your project code name is Cedar.
+PASS  CP2  recall in same session             exit=0   2.1s  Your project code name is Cedar.
+PASS  CP2  isolation (other session)          exit=0   3.4s  The question cannot be answered as there is no information about your project code name in
+PASS  CP2  CSV total                          exit=0   5.3s  The total of the revenue column in sales.csv is 300.
+PASS  CP2  follow-up uses context             exit=0   4.5s  The average of the revenue column in sales.csv is 150.
+PASS  CP2  CSV copy from context              exit=0   4.4s  Saved a copy of the table as reports/sales_copy.csv.
+PASS  CP2  CSV remove rows                    exit=0   6.0s  Removed rows with status 'cancelled' from orders.csv and saved the result as active.csv.
+        tally.py requirements passed: 6/6
+PASS  CP3  programming (tally.py)             exit=0 211.6s  ...
+        REPORT.json keys correct: 12/12
+PASS  CP3  debugging (REPORT.json)            exit=0  57.9s  ...
+
+13/13 steps passed in 320s
+```
+
 ## Known limitations
 
-- **Model limits on CP3 programming.** Qwen3-14B without thinking sometimes leaves one option unimplemented in
-  its first draft. The harness's argument map, lint, option-ignored checks and fresh-rewrite recover most cases;
-  1 of 14 live runs still lost 3 checks. Latest numbers are in `AUDIT.md` §6.
+- **Model limits on CP3 programming.** Qwen3-14B without thinking sometimes leaves a requirement unimplemented
+  or misreads one, and its own tests rarely cover the edge cases a requirement names. The harness's checks,
+  self-review, best-version restore and broken-edit restore recover most cases. Still observed:
+  - `count --invalid` (variant D);
+  - `$`/`+` amounts and date filters (variant E);
+  - `monthly --json` (variant F);
+  - `find WORD --file PATH` in 2 of 5 `wordstat` runs.
+- **CP3 programming time.** Runs take 140-240 s of the 300 s limit (`tally` 138-220 s, `wordstat` 164-242 s).
+  The internal deadline (285 s) and wrap-up keep every run inside the limit, but there is little spare time
+  on a slow endpoint.
 - **Hidden debugging keys.** These are inferred from the task wording; a key whose type is ambiguous is typed
   from the model's value.
 - **Untested platforms.** Python 3.8 and Linux containers were not run (not installed on the development

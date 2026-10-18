@@ -170,22 +170,30 @@ class Tools(unittest.TestCase):
         shutil.rmtree(self.scratch, ignore_errors=True)
 
     def test_t01_timeout_kills_process_group(self):
+        with open(os.path.join(self.ws, "sleeper.py"), "w") as f:
+            f.write("import subprocess, time\nsubprocess.Popen(['sleep', '999'])\ntime.sleep(999)\n")
         t0 = time.monotonic()
-        out = self.t.call("run_command", {"command": "sleep 999 & sleep 999; echo never", "timeout": 1})
+        out = self.t.call("run_command", {"command": "python3 sleeper.py", "timeout": 1})
         self.assertLess(time.monotonic() - t0, 8)
         self.assertIn("TIMED OUT", out)
         ps = subprocess.run(["pgrep", "-f", "sleep 999"], stdout=subprocess.PIPE).stdout.decode().split()
         self.assertEqual(ps, [], "grandchild survived")
 
     def test_t02_output_captured_not_leaked(self):
-        out = self.t.call("run_command", {"command": "echo hello; echo err >&2"})
+        with open(os.path.join(self.ws, "hello.py"), "w") as f:
+            f.write("import sys\nprint('hello')\nprint('err', file=sys.stderr)\n")
+        out = self.t.call("run_command", {"command": "python3 hello.py"})
         self.assertIn("stdout:\nhello", out)
         self.assertIn("stderr:\nerr", out)
 
     def test_t03_blocklist(self):
+        # No shell at all: anything but `python3 <file.py>` / `python3 -m unittest|pytest` is refused.
         for cmd in ("curl http://x", "wget x", "pip install requests", "rm -rf /", "rm -rf ~", "sudo ls",
-                    "python3 -m pip install x", "nc -l 80"):
-            self.assertIn("refused", self.t.call("run_command", {"command": cmd}), cmd)
+                    "python3 -m pip install x", "nc -l 80", "bash -c ls", "python3 hello.py | sh",
+                    "python3 hello.py; rm -rf ~", "python3 hello.py > out.txt", "python3 -c 'print(1)'",
+                    "echo $HOME", "python3 /etc/passwd.py"):
+            self.assertIn("refused" if "passwd" not in cmd else "", self.t.call("run_command", {"command": cmd}), cmd)
+        self.assertIn("ERROR", self.t.call("run_command", {"command": "python3 /etc/passwd.py"}))
 
     def test_t04_stdin_is_devnull(self):
         out = self.t.call("run_python", {"code": "try:\n    input()\nexcept EOFError:\n    print('EOF')", "timeout": 5})

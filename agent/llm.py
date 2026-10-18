@@ -385,6 +385,7 @@ class LLM:
 
             dt = time.monotonic() - t0
             self.calls_used += 1
+            self.slowest_call = max(getattr(self, "slowest_call", 0.0), dt)
             usage = resp.get("usage") or {}
             ct = usage.get("completion_tokens")
             if isinstance(ct, int) and ct >= 50 and dt > 0.5:

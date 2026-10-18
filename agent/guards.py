@@ -370,7 +370,8 @@ def _per_item_spans(t):
     'each bullet under 25 words', '3 bullet points of at most 15 words each',
     '3 sentences, each under 20 words'."""
     spans = [(m.start(), m.end()) for m in re.finditer(r"\b(?:each|every|per)\s+" + _ITEM + r"\b[^.;]{0,40}", t)]
-    spans += [(m.start(), m.end()) for m in re.finditer(_LIMIT_WORDS + _NUM + r"\s+words?\s+(?:each|apiece|per\s+"
+    spans += [(m.start(), m.end()) for m in re.finditer(_LIMIT_WORDS + _NUM + r"\s+words?\s+(?:(?:max(?:imum)?|at\s+"
+                                                         r"most|or\s+(?:less|fewer))\s+)?(?:each|apiece|per\s+"
                                                          + _ITEM + r")\b", t)]
     for m in re.finditer(r"\b" + _ITEM + r"\b[^.;]{0,25}?,?\s*each\s+" + _LIMIT_WORDS + _NUM + r"\s+words?", t):
         spans.append((t.index("each", m.start()), m.end()))
@@ -439,7 +440,7 @@ def parse_word_min(text):
     skip = _source_sentence_spans(t)
     for pat in (r"at\s+least\s+" + _NUM + r"\s+words?", r"\b" + _NUM + r"\s*(?:to|-|\u2013)\s*" + _NUM_NC + r"\s+words?",
                 r"\bbetween\s+" + _NUM + r"\s+and\s+" + _NUM_NC + r"\s+words?",
-                r"(?:no\s+(?:fewer|less)\s+than|minimum\s+of)\s+" + _NUM + r"\s+words?"):
+                r"(?:no\s+(?:fewer|less)\s+than|minimum\s+of|at\s+least)\s+" + _NUM + r"\b(?=[^.;]{0,40}?\bwords?\b)"):
         for m in re.finditer(pat, t):
             if not any(a <= m.start() < b for a, b in skip):
                 return _to_int(m.group(1))
@@ -528,6 +529,12 @@ def _cnt(s):
     return int(s) if s.isdigit() else _COUNT_WORDS[s]
 
 
+def bullet_per_source(text):
+    """'one bullet (point) per file / source / log' (the count is the number of sources)."""
+    return bool(re.search(r"\b(?:one|a|1)\s+(?:bullet(?:\s+point)?|point)\s+(?:per|for\s+each|for\s+every)\s+"
+                          r"(?:source\s+)?(?:file|source|log|document)\b", nfc(text or ""), re.I))
+
+
 def parse_bullet_count(text):
     """'exactly 3 bullet points' / 'in three bullets' / '5 bullet points' -> 3/3/5, else None.
     'one bullet per source file' -> the number of source files named (all paths but the output)."""
@@ -538,7 +545,7 @@ def parse_bullet_count(text):
     if re.search(r"\b(?:one|a|1)\s+(?:bullet(?:\s+point)?|point)\s+(?:per|for\s+each|for\s+every)\s+"
                  r"(?:source\s+)?(?:file|source|log|document)\b", t, re.I):
         n = len(prompt_paths(t)) - 1
-        return n if n > 0 else None
+        return n if n > 1 else None
     m = re.search(r"\b(?:exactly\s+|in\s+|as\s+|with\s+|of\s+|using\s+)?" + _CNT + r"\s+(?:short\s+|concise\s+)?"
                   r"(?:bullet(?:ed)?(?:\s+points?)?|bullets|points)\b", nfc(text or ""), re.I)
     return _cnt(m.group(1)) if m else None

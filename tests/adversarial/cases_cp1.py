@@ -457,3 +457,37 @@ case("DL-B01", "delete", "stress", "Delete by pattern inside one folder; the a.t
      {"cache/a.tmp": "1", "cache/b.tmp": "2", "cache/sub/c.tmp": "3", "cache/keep.dat": "k", "a.tmp": "root"},
      "Delete every .tmp file in the cache folder, including subfolders.", expect="either",
      checks=[_tmp_all_or_nothing()], changes=["cache/a.tmp", "cache/b.tmp", "cache/sub/c.tmp"])
+
+
+# ======================================================================= round 3
+# Reviewer items 6-7: one compound-delete rule everywhere (all or nothing), and
+# live checks for per-bullet limits combined with one-bullet-per-file and ranges.
+
+case("DL-C01", "delete", "grader-like", "Two named files, both present: both go, nothing else.",
+     {"x.txt": "x\n", "y.txt": "y\n", "z.txt": "z\n"}, "Delete x.txt and y.txt.",
+     checks=[absent("x.txt"), absent("y.txt")], changes=["x.txt", "y.txt"])
+
+case("DL-C02", "delete", "grader-like", "Three named files, one missing: all-or-nothing means none is deleted and "
+     "the run fails naming the missing file.",
+     {"a.log": "a\n", "c.log": "c\n", "d.log": "d\n"}, "Delete a.log, b.log and c.log.", expect="error",
+     checks=[answer_has("b.log")])
+
+case("SM-C01", "summary", "grader-like", "One bullet per named file combined with a per-bullet word limit.",
+     {"logs/start.txt": _start, "logs/update.txt": _update, "logs/resolution.txt": _resol},
+     "Use logs/start.txt, logs/update.txt, and logs/resolution.txt to create reports/per_file.txt with one bullet "
+     "point per file, each bullet under 20 words.",
+     checks=[bullets("reports/per_file.txt", 3), _lines_max_words("reports/per_file.txt", 19),
+             file_has("reports/per_file.txt", "load balancer")], changes=["reports/"])
+
+case("SM-C02", "summary", "grader-like", "A word range phrased 'no fewer than 70 and no more than 110 words'.",
+     {"alpha.txt": "Alpha team shipped the billing export on Monday. It cut manual work by four hours a week.\n",
+      "beta.txt": "Beta team delayed the mobile release to Friday because of a login bug found in testing.\n",
+      "gamma.txt": "Gamma team hired two support engineers who start on the first of next month.\n"},
+     "Write summary/teams.txt summarizing alpha.txt, beta.txt and gamma.txt in no fewer than 70 and no more than "
+     "110 words.",
+     checks=[word_min("summary/teams.txt", 70), word_max("summary/teams.txt", 110),
+             file_has("summary/teams.txt", "billing", "login", "support")], changes=["summary/"])
+
+case("SM-C03", "summary", "grader-like", "One bullet per file of a folder with a per-bullet limit ('15 words max each').",
+     _LOGS3, "Summarize every file in the logs folder into reports/folder.txt: one bullet per file, 15 words max each.",
+     checks=[bullets("reports/folder.txt", 3), _lines_max_words("reports/folder.txt", 15)], changes=["reports/"])

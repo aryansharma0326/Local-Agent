@@ -105,6 +105,67 @@ All 147 cases were run live on the final code. 141 fully pass (CV-B01 passed on 
   - `grader-like` matches the published examples in wording and difficulty.
   - `stress` deliberately goes beyond them.
 
+## Result: `v5`
+
+**All cases**
+
+| Checkpoint | Category | Cases passed | Category |
+|---|---|---|---|
+| CP1 | Create a file | 18/18 | pass |
+| CP1 | Delete a file | 15/15 | pass |
+| CP1 | Read and answer | 16/16 | pass |
+| CP1 | Multi-file summary | 16/16 | pass |
+| CP2 | Context within a session | 30/30 | pass |
+| CP2 | Session isolation | 13/13 | pass |
+| CP2 | CSV operations | 33/33 | pass |
+
+- CP1 score under the CP1 rules: **3/3**
+- CP2 score under the CP2 rules: **3/3**
+- CP3 runs (raw points; the grader runs 1 programming and 1 debugging prompt, 12 points each, 3 raw points = 1 course point):
+    - PG-O (programming): 6/6
+    - PG-D (programming): 10/12
+    - PG-E (programming): 1/12
+    - PG-F (programming): 9/12
+    - PG-W (programming): 3/4
+    - DB-1 (debugging): 12/12
+    - DB-2 (debugging): 12/12
+    - DB-3 (debugging): 12/12
+    - DB-4 (debugging): 12/12
+    - DB-B01 (debugging): 11/12
+    - DB-B02 (debugging): 12/12
+    - DB-B03 (debugging): 10/12
+    - DB-S31 (debugging): 12/12
+    - DB-S32 (debugging): 12/12
+
+**Excluding `stress` cases**
+
+| Checkpoint | Category | Cases passed | Category |
+|---|---|---|---|
+| CP1 | Create a file | 12/12 | pass |
+| CP1 | Delete a file | 9/9 | pass |
+| CP1 | Read and answer | 10/10 | pass |
+| CP1 | Multi-file summary | 12/12 | pass |
+| CP2 | Context within a session | 24/24 | pass |
+| CP2 | Session isolation | 10/10 | pass |
+| CP2 | CSV operations | 21/21 | pass |
+
+- CP1 score under the CP1 rules: **3/3**
+- CP2 score under the CP2 rules: **3/3**
+- CP3 runs (raw points; the grader runs 1 programming and 1 debugging prompt, 12 points each, 3 raw points = 1 course point):
+    - PG-O (programming): 6/6
+    - PG-D (programming): 10/12
+    - PG-F (programming): 9/12
+    - PG-W (programming): 3/4
+    - DB-1 (debugging): 12/12
+    - DB-3 (debugging): 12/12
+    - DB-4 (debugging): 12/12
+    - DB-B01 (debugging): 11/12
+    - DB-B02 (debugging): 12/12
+    - DB-S31 (debugging): 12/12
+    - DB-S32 (debugging): 12/12
+
+Failed or partial cases: `PG-D`, `PG-E`, `PG-F`, `DB-B01`, `DB-B03`, `PG-W`
+
 ## Result: `final`
 
 **All cases**
@@ -349,157 +410,352 @@ Failed or partial cases: `CR-A04`, `DL-A12`, `RQ-A01`, `RQ-A08`, `SM-A01`, `SM-A
 
 ## Branch comparison
 
-| Case | Tag | `final` | `fixed-r2` | `fixed` | `audit-fix` | `audit-86a82b` |
-|---|---|---|---|---|---|---|
-| CR-A01 | stress | PASS | - | PASS | PASS | PASS |
-| CR-A02 | grader-like | PASS | - | PASS | PASS | PASS |
-| CR-A03 | grader-like | PASS | - | PASS | PASS | PASS |
-| CR-A04 | stress | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| CR-A05 | grader-like | PASS | - | PASS | PASS | PASS |
-| CR-A06 | grader-like | PASS | - | PASS | PASS | PASS |
-| CR-A07 | grader-like | PASS | - | PASS | PASS | PASS |
-| CR-A08 | grader-like | PASS | - | PASS | PASS | PASS |
-| CR-A09 | stress | PASS | - | PASS | PASS | PASS |
-| CR-A10 | stress | PASS | - | PASS | PASS | PASS |
-| CR-A11 | grader-like | PASS | - | PASS | PASS | PASS |
-| CR-A12 | stress | PASS | - | PASS | PASS | PASS |
-| CR-A13 | grader-like | PASS | - | PASS | PASS | PASS |
-| CR-A14 | grader-like | PASS | - | PASS | PASS | PASS |
-| DL-A01 | stress | PASS | - | PASS | PASS | PASS |
-| DL-A02 | grader-like | PASS | - | PASS | PASS | PASS |
-| DL-A03 | grader-like | PASS | - | PASS | PASS | PASS |
-| DL-A04 | grader-like | PASS | - | PASS | PASS | PASS |
-| DL-A05 | grader-like | PASS | - | PASS | PASS | PASS |
-| DL-A06 | stress | PASS | - | PASS | PASS | PASS |
-| DL-A07 | grader-like | PASS | - | PASS | PASS | PASS |
-| DL-A08 | stress | PASS | - | PASS | PASS | PASS |
-| DL-A09 | stress | PASS | - | PASS | PASS | PASS |
-| DL-A10 | grader-like | PASS | - | PASS | PASS | PASS |
-| DL-A11 | grader-like | PASS | - | PASS | PASS | PASS |
-| DL-A12 | stress | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| RQ-A01 | stress | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| RQ-A02 | grader-like | PASS | - | PASS | PASS | PASS |
-| RQ-A03 | grader-like | PASS | - | PASS | PASS | PASS |
-| RQ-A04 | grader-like | PASS | - | PASS | PASS | PASS |
-| RQ-A05 | grader-like | PASS | - | PASS | PASS | PASS |
-| RQ-A06 | grader-like | PASS | - | PASS | PASS | PASS |
-| RQ-A07 | grader-like | PASS | - | PASS | PASS | PASS |
-| RQ-A08 | stress | **FAIL** (3/3) | - | **FAIL** (3/3) | **FAIL** (3/3) | **FAIL** (3/3) |
-| RQ-A09 | grader-like | PASS | - | PASS | PASS | PASS |
-| RQ-A10 | stress | PASS | - | PASS | PASS | PASS |
-| RQ-A11 | grader-like | PASS | - | PASS | PASS | PASS |
-| RQ-A12 | stress | PASS | - | PASS | PASS | PASS |
-| SM-A01 | grader-like | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| SM-A02 | stress | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| SM-A03 | stress | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| SM-A04 | grader-like | PASS | - | PASS | PASS | PASS |
-| SM-A05 | stress | PASS | - | PASS | PASS | PASS |
-| SM-A06 | grader-like | PASS | - | PASS | PASS | PASS |
-| SM-A07 | grader-like | PASS | - | PASS | PASS | PASS |
-| SM-A08 | stress | PASS | - | PASS | PASS | PASS |
-| SM-B01 | grader-like | PASS | **FAIL** (3/3) | - | - | - |
-| SM-B02 | grader-like | PASS | **FAIL** (3/3) | - | - | - |
-| SM-B03 | grader-like | PASS | **FAIL** (3/3) | - | - | - |
-| SM-B04 | grader-like | PASS | PASS | - | - | - |
-| SM-B05 | grader-like | PASS | PASS | - | - | - |
-| RQ-B01 | grader-like | PASS | PASS | - | - | - |
-| RQ-B02 | stress | PASS | PASS | - | - | - |
-| RQ-B03 | grader-like | PASS | PASS | - | - | - |
-| RQ-B04 | stress | PASS | PASS | - | - | - |
-| CR-B01 | grader-like | PASS | PASS | - | - | - |
-| CR-B02 | grader-like | PASS | PASS | - | - | - |
-| CR-B03 | stress | PASS | PASS | - | - | - |
-| CR-B04 | grader-like | PASS | PASS | - | - | - |
-| DL-B01 | stress | PASS | PASS | - | - | - |
-| GR-01 | grader-known | PASS | - | PASS | PASS | PASS |
-| GR-02 | grader-known | PASS | - | PASS | PASS | PASS |
-| GR-03 | grader-known | PASS | - | PASS | PASS | PASS |
-| GR-04 | grader-known | PASS | - | PASS | PASS | **FAIL** (3/3) |
-| GR-05 | grader-known | PASS | - | PASS | PASS | PASS |
-| CX-01 | grader-like | PASS | - | PASS | PASS | **FAIL** (3/3) |
-| CX-02 | grader-like | PASS | - | PASS | PASS | PASS |
-| CX-03 | stress | PASS | - | PASS | PASS | PASS |
-| CX-04 | grader-like | PASS | - | PASS | PASS | PASS |
-| CX-05 | stress | PASS | - | PASS | PASS | **FAIL** (3/3) |
-| CX-06 | grader-like | PASS | - | PASS | PASS | PASS |
-| CX-07 | stress | PASS | - | PASS | PASS | PASS |
-| CX-08 | stress | PASS | - | PASS | PASS | PASS |
-| CX-09 | grader-like | PASS | - | PASS | PASS | PASS |
-| CX-10 | grader-like | PASS | - | PASS | PASS | PASS |
-| CX-11 | stress | PASS | - | PASS | PASS | PASS |
-| CX-12 | grader-like | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| CX-13 | grader-like | PASS | - | PASS | PASS | **FAIL** (3/3) |
-| CX-14 | grader-like | PASS | - | PASS | PASS | PASS |
-| IS-01 | grader-like | PASS | - | PASS | PASS | **FAIL** (3/3) |
-| IS-02 | grader-like | PASS | - | PASS | PASS | PASS |
-| IS-03 | stress | PASS | - | PASS | PASS | **FAIL** (3/3) |
-| IS-04 | grader-like | PASS | - | PASS | PASS | PASS |
-| IS-05 | grader-like | PASS | - | PASS | PASS | PASS |
-| IS-06 | stress | PASS | - | PASS | PASS | PASS |
-| IS-07 | stress | PASS | - | PASS | PASS | PASS |
-| IS-08 | grader-like | PASS | - | PASS | PASS | PASS |
-| IS-09 | grader-like | PASS | - | PASS | PASS | PASS |
-| IS-10 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A01 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A02 | stress | PASS | - | PASS | PASS | PASS |
-| CV-A03 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A04 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A05 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A06 | stress | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| CV-A07 | stress | PASS | - | PASS | PASS | PASS |
-| CV-A08 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A09 | stress | PASS | - | PASS | PASS | PASS |
-| CV-A10 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A11 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A12 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A13 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A14 | stress | PASS | - | PASS | PASS | PASS |
-| CV-A15 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A16 | stress | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| CV-A17 | stress | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| CV-A18 | grader-like | PASS | - | PASS | PASS | **FAIL** (3/3) |
-| CV-A19 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A20 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A21 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A22 | stress | PASS | - | PASS | PASS | PASS |
-| CV-A23 | grader-like | PASS | - | PASS | PASS | PASS |
-| CV-A24 | grader-like | PASS | - | PASS | PASS | PASS |
-| CX-15 | grader-like | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| CX-16 | grader-like | PASS | - | PASS | PASS | **FAIL** (3/3) |
-| CX-17 | grader-like | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| CX-18 | grader-like | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
-| CX-19 | grader-like | PASS | - | PASS | PASS | **FAIL** (3/3) |
-| CX-B01 | grader-like | PASS | **FAIL** (3/3) | - | - | - |
-| CX-B02 | grader-like | PASS | PASS | - | - | - |
-| CX-B03 | grader-like | PASS | **FAIL** (3/3) | - | - | - |
-| CX-B04 | grader-like | PASS | PASS | - | - | - |
-| CX-B05 | grader-like | PASS | **FAIL** (3/3) | - | - | - |
-| CX-B06 | grader-like | PASS | PASS | - | - | - |
-| CX-B07 | stress | PASS | **FAIL** (3/3) | - | - | - |
-| CX-B08 | grader-like | PASS | PASS | - | - | - |
-| DL-B02 | grader-like | PASS | PASS | - | - | - |
-| IS-B01 | grader-like | PASS | PASS | - | - | - |
-| CV-B01 | stress | PASS | **FAIL** (3/3) | - | - | - |
-| CV-B02 | grader-like | PASS | **FAIL** (3/3) | - | - | - |
-| CV-B03 | stress | PASS | **FAIL** (3/3) | - | - | - |
-| CV-B04 | grader-like | PASS | PASS | - | - | - |
-| CV-B05 | stress | PASS | PASS | - | - | - |
-| CV-B06 | grader-like | PASS | PASS | - | - | - |
-| CV-B07 | stress | PASS | PASS | - | - | - |
-| CV-B08 | grader-like | PASS | PASS | - | - | - |
-| PG-O | grader-like | 6/6 | - | 6/6 | 6/6 | 6/6 |
-| PG-D | grader-like | 10/12 | - | 11/12 | 10/12 | 11/12 |
-| PG-E | stress | 1/12 | - | 2/12 | 1/12 | 2/12 |
-| DB-1 | grader-like | 12/12 | - | 12/12 | 11/12 | 10/12 |
-| DB-2 | stress | 12/12 | - | 12/12 | 10/12 | 10/12 |
-| DB-3 | grader-like | 12/12 | - | 12/12 | 9/12 | 9/12 |
-| DB-4 | grader-like | 12/12 | - | 12/12 | 12/12 | 12/12 |
-| PG-F | grader-like | 10/12 | 10/12 | - | - | - |
-| DB-B01 | grader-like | 10/12 | 9/12 | - | - | - |
-| DB-B02 | grader-like | 12/12 | 11/12 | - | - | - |
-| DB-B03 | stress | 10/12 | 0/12 | - | - | - |
+| Case | Tag | `v5` | `final` | `fixed-r2` | `fixed` | `audit-fix` | `audit-86a82b` |
+|---|---|---|---|---|---|---|---|
+| CR-A01 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A02 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A03 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A04 | stress | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| CR-A05 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A06 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A07 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A08 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A09 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A10 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A11 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A12 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A13 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CR-A14 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A01 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A02 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A03 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A04 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A05 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A06 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A07 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A08 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A09 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A10 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A11 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| DL-A12 | stress | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| RQ-A01 | stress | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| RQ-A02 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| RQ-A03 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| RQ-A04 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| RQ-A05 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| RQ-A06 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| RQ-A07 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| RQ-A08 | stress | PASS | **FAIL** (3/3) | - | **FAIL** (3/3) | **FAIL** (3/3) | **FAIL** (3/3) |
+| RQ-A09 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| RQ-A10 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| RQ-A11 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| RQ-A12 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| SM-A01 | grader-like | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| SM-A02 | stress | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| SM-A03 | stress | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| SM-A04 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| SM-A05 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| SM-A06 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| SM-A07 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| SM-A08 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| SM-B01 | grader-like | PASS | PASS | **FAIL** (3/3) | - | - | - |
+| SM-B02 | grader-like | PASS | PASS | **FAIL** (3/3) | - | - | - |
+| SM-B03 | grader-like | PASS | PASS | **FAIL** (3/3) | - | - | - |
+| SM-B04 | grader-like | PASS | PASS | PASS | - | - | - |
+| SM-B05 | grader-like | PASS | PASS | PASS | - | - | - |
+| RQ-B01 | grader-like | PASS | PASS | PASS | - | - | - |
+| RQ-B02 | stress | PASS | PASS | PASS | - | - | - |
+| RQ-B03 | grader-like | PASS | PASS | PASS | - | - | - |
+| RQ-B04 | stress | PASS | PASS | PASS | - | - | - |
+| CR-B01 | grader-like | PASS | PASS | PASS | - | - | - |
+| CR-B02 | grader-like | PASS | PASS | PASS | - | - | - |
+| CR-B03 | stress | PASS | PASS | PASS | - | - | - |
+| CR-B04 | grader-like | PASS | PASS | PASS | - | - | - |
+| DL-B01 | stress | PASS | PASS | PASS | - | - | - |
+| DL-C01 | grader-like | PASS | - | - | - | - | - |
+| DL-C02 | grader-like | PASS | - | - | - | - | - |
+| SM-C01 | grader-like | PASS | - | - | - | - | - |
+| SM-C02 | grader-like | PASS | - | - | - | - | - |
+| SM-C03 | grader-like | PASS | - | - | - | - | - |
+| GR-01 | grader-known | PASS | PASS | - | PASS | PASS | PASS |
+| GR-02 | grader-known | PASS | PASS | - | PASS | PASS | PASS |
+| GR-03 | grader-known | PASS | PASS | - | PASS | PASS | PASS |
+| GR-04 | grader-known | PASS | PASS | - | PASS | PASS | **FAIL** (3/3) |
+| GR-05 | grader-known | PASS | PASS | - | PASS | PASS | PASS |
+| CX-01 | grader-like | PASS | PASS | - | PASS | PASS | **FAIL** (3/3) |
+| CX-02 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CX-03 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CX-04 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CX-05 | stress | PASS | PASS | - | PASS | PASS | **FAIL** (3/3) |
+| CX-06 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CX-07 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CX-08 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CX-09 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CX-10 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CX-11 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CX-12 | grader-like | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| CX-13 | grader-like | PASS | PASS | - | PASS | PASS | **FAIL** (3/3) |
+| CX-14 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| IS-01 | grader-like | PASS | PASS | - | PASS | PASS | **FAIL** (3/3) |
+| IS-02 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| IS-03 | stress | PASS | PASS | - | PASS | PASS | **FAIL** (3/3) |
+| IS-04 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| IS-05 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| IS-06 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| IS-07 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| IS-08 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| IS-09 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| IS-10 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A01 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A02 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A03 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A04 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A05 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A06 | stress | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| CV-A07 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A08 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A09 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A10 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A11 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A12 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A13 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A14 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A15 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A16 | stress | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| CV-A17 | stress | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| CV-A18 | grader-like | PASS | PASS | - | PASS | PASS | **FAIL** (3/3) |
+| CV-A19 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A20 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A21 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A22 | stress | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A23 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CV-A24 | grader-like | PASS | PASS | - | PASS | PASS | PASS |
+| CX-15 | grader-like | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| CX-16 | grader-like | PASS | PASS | - | PASS | PASS | **FAIL** (3/3) |
+| CX-17 | grader-like | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| CX-18 | grader-like | PASS | PASS | - | PASS | **FAIL** (3/3) | **FAIL** (3/3) |
+| CX-19 | grader-like | PASS | PASS | - | PASS | PASS | **FAIL** (3/3) |
+| CX-B01 | grader-like | PASS | PASS | **FAIL** (3/3) | - | - | - |
+| CX-B02 | grader-like | PASS | PASS | PASS | - | - | - |
+| CX-B03 | grader-like | PASS | PASS | **FAIL** (3/3) | - | - | - |
+| CX-B04 | grader-like | PASS | PASS | PASS | - | - | - |
+| CX-B05 | grader-like | PASS | PASS | **FAIL** (3/3) | - | - | - |
+| CX-B06 | grader-like | PASS | PASS | PASS | - | - | - |
+| CX-B07 | stress | PASS | PASS | **FAIL** (3/3) | - | - | - |
+| CX-B08 | grader-like | PASS | PASS | PASS | - | - | - |
+| DL-B02 | grader-like | PASS | PASS | PASS | - | - | - |
+| IS-B01 | grader-like | PASS | PASS | PASS | - | - | - |
+| CV-B01 | stress | PASS | PASS | **FAIL** (3/3) | - | - | - |
+| CV-B02 | grader-like | PASS | PASS | **FAIL** (3/3) | - | - | - |
+| CV-B03 | stress | PASS | PASS | **FAIL** (3/3) | - | - | - |
+| CV-B04 | grader-like | PASS | PASS | PASS | - | - | - |
+| CV-B05 | stress | PASS | PASS | PASS | - | - | - |
+| CV-B06 | grader-like | PASS | PASS | PASS | - | - | - |
+| CV-B07 | stress | PASS | PASS | PASS | - | - | - |
+| CV-B08 | grader-like | PASS | PASS | PASS | - | - | - |
+| PG-O | grader-like | 6/6 | 6/6 | - | 6/6 | 6/6 | 6/6 |
+| PG-D | grader-like | 10/12 | 10/12 | - | 11/12 | 10/12 | 11/12 |
+| PG-E | stress | 1/12 | 1/12 | - | 2/12 | 1/12 | 2/12 |
+| DB-1 | grader-like | 12/12 | 12/12 | - | 12/12 | 11/12 | 10/12 |
+| DB-2 | stress | 12/12 | 12/12 | - | 12/12 | 10/12 | 10/12 |
+| DB-3 | grader-like | 12/12 | 12/12 | - | 12/12 | 9/12 | 9/12 |
+| DB-4 | grader-like | 12/12 | 12/12 | - | 12/12 | 12/12 | 12/12 |
+| PG-F | grader-like | 9/12 | 10/12 | 10/12 | - | - | - |
+| DB-B01 | grader-like | 11/12 | 10/12 | 9/12 | - | - | - |
+| DB-B02 | grader-like | 12/12 | 12/12 | 11/12 | - | - | - |
+| DB-B03 | stress | 10/12 | 10/12 | 0/12 | - | - | - |
+| DB-S31 | grader-like | 12/12 | - | - | - | - | - |
+| DB-S32 | grader-like | 12/12 | - | - | - | - | - |
+| PG-W | grader-like | 3/4 | - | - | - | - | - |
 
 Rows are listed only where a case did not fully pass on some branch. A FAIL count such as (3/3) means the case failed that many of its runs.
+
+## Failed cases on `v5`
+
+### `PG-D`: Programming (CP3, grader-like)
+
+**What it attacks:** Hidden-style 7-12 the agent was never tuned on: --json on every command (object shapes), count --invalid, monthly, stats with exit 1, usage errors with exit 2, exact half-up rounding of 3-decimal amounts. Data has CRLF, a repeated header, a blank line and 200 invalid rows.
+
+**Why it failed:** Requirement 8 failed: `count --invalid` always prints 0. On the second run, requirement 7 also failed (`total --json` printed `"category": null`). The harness checks only run the task's own example commands plus generic probes (`agent/deep.py`). A flag mentioned only in requirement prose (`count --invalid`, `{"invalid": N}`) is never executed, and the agent finished with time left.
+
+**Reproduce:**
+
+```bash
+SUBMISSION_DIR="/absolute/path/to/your/submission"
+task_dir="$(mktemp -d)"
+cd "$task_dir"
+mkdir -p unrelated/empty && head -c 1024 /dev/urandom > unrelated/sentinel.bin
+# workspace: generated inputs + TASK.md (see tests/adversarial/cases_cp3.py); easiest:
+python3 tests/adversarial/runner.py --submission "$SUBMISSION_DIR" --label repro --only PG-D --keep
+```
+
+**Expected:**
+
+All requirements graded items correct (see the failing items below).
+
+**Observed:**
+
+Exit code 0 after 102.4s, 3 model calls; message: `All requirements are met. tally.py has been successfully implemented and passes all the automated tests. (harness checks: 8/6 example commands ran cleanly)`
+Score: **10/12**. Endpoint errors the agent retried through during the run: 0.
+- FAIL req 7: total --category --json: args=['total', '--json', '--category', 'Food'] want='{"category": "food", "total": "455876.77"}\n'/exit 0 got='{"total": "455876.77"}\n'/exit 0 stderr=''
+- FAIL req 8: count --invalid: args=['count', '--invalid'] want='200\n'/exit 0 got='0\n'/exit 0 stderr=''
+- FAIL req 8: count --invalid (small): args=['count', '--invalid', '--file', '/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_a977k23q/D_invalid.csv'] want='5\n'/exit 0 got='0\n'/exit 0 stderr=''
+- FAIL req 8: count --invalid --json: args=['count', '--invalid', '--json', '--file', '/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_a977k23q/D_invalid.csv'] want='{"invalid": 5}\n'/exit 0 got='{"invalid": 0}\n'/exit 0 stderr=''
+
+### `PG-E`: Programming (CP3, stress)
+
+**What it attacks:** Hidden-style 7-12: --from/--to on every command, comma-separated category lists, bottom N, whitespace trimming, $/+ amount formats, --name=value options. Data has a UTF-8 BOM.
+
+**Why it failed:** The agent wrote `tally.py` in one call, made a one-line edit, and declared success after 3 model calls and 83 s, with about 200 s of its 285 s budget unused. Its program rejects `$12.00` / `+12.00` / `-$3.50` amounts as invalid and ignores surrounding whitespace rules (requirements 10 and 11). Because of that, even the official requirements 1-6 come out wrong on this data, and the `--from/--to`, category-list and `bottom` features were never implemented. The harness reported "No problems detected" because it only exercises example commands and generic probes, so nothing checked the six requirements that have no example command.
+
+**Reproduce:**
+
+```bash
+SUBMISSION_DIR="/absolute/path/to/your/submission"
+task_dir="$(mktemp -d)"
+cd "$task_dir"
+mkdir -p unrelated/empty && head -c 1024 /dev/urandom > unrelated/sentinel.bin
+# workspace: generated inputs + TASK.md (see tests/adversarial/cases_cp3.py); easiest:
+python3 tests/adversarial/runner.py --submission "$SUBMISSION_DIR" --label repro --only PG-E --keep
+```
+
+**Expected:**
+
+All requirements graded items correct (see the failing items below).
+
+**Observed:**
+
+Exit code 0 after 184.1s, 16 model calls; message: `All requirements are met. tally.py has been successfully implemented and passed all harness checks. (harness checks: 9/6 example commands ran cleanly)`
+Score: **1/12**. Endpoint errors the agent retried through during the run: 0.
+- FAIL req 1: count: args=['count'] want='40001\n'/exit 0 got='39589\n'/exit 0 stderr=''
+- FAIL req 2: total: args=['total'] want='4500648.49\n'/exit 0 got='4965806.17\n'/exit 0 stderr=''
+- FAIL req 3: total --category FOOD (upper): args=['total', '--category', 'FOOD'] want='459176.75\n'/exit 0 got='500312.54\n'/exit 0 stderr=''
+- FAIL req 3: total --category 'Home & Garden': args=['total', '--category', 'Home & Garden'] want='431725.74\n'/exit 0 got='485879.59\n'/exit 0 stderr=''
+- FAIL req 4: top 3: args=['top', '3'] want='utilities\t460582.93\nfood\t459176.75\nhealth\t456371.85\n'/exit 0 got='health\t506352.57\nutilities\t503619.16\ntravel\t502584.22\n'/exit 0 stderr=''
+- FAIL req 4: top 100 (fewer categories, forced tie books/gifts): args=['top', '100'] want='utilities\t460582.93\nfood\t459176.75\nhealth\t456371.85\nbooks\t454624.10\ngifts\t454624.10\ntravel\t450271.87\nentertainment\t446523.73\nrent\t445766.16\ntransport\t440981.26\n'/exit 0 got='health\t506352.57\nutilities\t503619.16\ntravel\t502584.22\ngifts\t501290.66\nfood\t500312.54\nbooks\t496472.30\nentertainment\t492292.95\ntransport\t489968.64\nrent\t487033.54\n'/ex
+- FAIL req 5: lowercase output (small file): args=['top', '5', '--file', '/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_0_qfx92l/case.csv'] want='transport\t25.50\nfood\t8.50\n'/exit 0 got='transport\t25.50\nfood\t18.50\n'/exit 0 stderr=''
+- FAIL req 6: range: args=['range', '--from', '2025-05-17', '--to', '2025-10-01'] want='count=10116 total=1141183.13\n'/exit 0 got='count=10009 total=1258809.64\n'/exit 0 stderr=''
+- FAIL req 6: range single day: args=['range', '--from', '2025-05-17', '--to', '2025-05-17'] want='count=86 total=8890.41\n'/exit 0 got='count=85 total=10335.48\n'/exit 0 stderr=''
+- FAIL req 6: range options reversed: args=['range', '--to', '2025-10-01', '--from', '2025-05-17'] want='count=10116 total=1141183.13\n'/exit 0 got='count=10009 total=1258809.64\n'/exit 0 stderr=''
+- FAIL req 6: option before argument: args=['total', '--file', '/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_0_qfx92l/case.csv', '--category', 'food'] want='8.50\n'/exit 0 got='18.50\n'/exit 0 stderr=''
+- FAIL req 7: count --from --to: args=['count', '--from', '2025-05-17', '--to', '2025-10-01'] want='10116\n'/exit 0 got='39589\n'/exit 0 stderr=''
+- FAIL req 7: total --from only: args=['total', '--from', '2025-10-01'] want='2255694.13\n'/exit 0 got='4965806.17\n'/exit 0 stderr=''
+- FAIL req 7: top --to only: args=['top', '3', '--to', '2025-05-17'] want='utilities\t120193.27\nhealth\t117469.30\nrent\t115273.86\n'/exit 0 got='utilities\t132031.98\nhealth\t128606.86\ntravel\t127216.06\n'/exit 0 stderr=''
+- FAIL req 8: count --category list: args=['count', '--category', 'food,rent'] want='7976\n'/exit 0 got='39589\n'/exit 0 stderr=''
+- FAIL req 8: total --category list with spaces: args=['total', '--category', 'FOOD, Rent'] want='904942.91\n'/exit 0 got='987346.08\n'/exit 0 stderr=''
+- FAIL req 9: bottom 3: args=['bottom', '3'] want='home & garden\t431725.74\ntransport\t440981.26\nrent\t445766.16\n'/exit 0 got='home & garden\t485879.59\nrent\t487033.54\ntransport\t489968.64\n'/exit 0 stderr=''
+- FAIL req 9: bottom 100: args=['bottom', '100'] want='home & garden\t431725.74\ntransport\t440981.26\nrent\t445766.16\nentertainment\t446523.73\ntravel\t450271.87\nbooks\t454624.10\ngifts\t454624.10\nhealth\t456371.85\nfood\t459176'/exit 0 got='home & garden\t485879.59\nrent\t487033.54\ntransport\t489968.64\nentertainment\t492292.95\nbooks\t496472.30\nfood\t500312.54\ngifts\t501290.66\ntravel\t502584.22\nutilities\t503'/e
+- FAIL req 11: amount formats total: args=['total', '--category', 'food', '--file', '/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_0_qfx92l/E_amt.csv'] want='17.00\n'/exit 0 got='27.50\n'/exit 0 stderr=''
+- FAIL req 11: amount formats count: args=['count', '--file', '/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_0_qfx92l/E_amt.csv'] want='5\n'/exit 0 got='4\n'/exit 0 stderr=''
+- FAIL req 12: --file=: args=['count', '--file=/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_0_qfx92l/E_amt.csv'] want='5\n'/exit 0 got='4\n'/exit 0 stderr=''
+- FAIL req 12: --category=: args=['total', '--category=food', '--file=/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_0_qfx92l/E_amt.csv'] want='17.00\n'/exit 0 got='27.50\n'/exit 0 stderr=''
+- FAIL req 12: --from= --to=: args=['range', '--from=2025-05-17', '--to=2025-10-01'] want='count=10116 total=1141183.13\n'/exit 0 got='count=10009 total=1258809.64\n'/exit 0 stderr=''
+
+### `PG-F`: Programming (CP3, grader-like)
+
+**What it attacks:** Hidden-style 7-12 with bigger outputs: monthly and monthly --json, median with an even/odd count, daily, export PATH (writes a CSV and prints 'wrote PATH'), and a 2-second speed limit on a 60,000-row file. This also checks the time budget when the self-review step runs.
+
+**Reproduce:**
+
+```bash
+SUBMISSION_DIR="/absolute/path/to/your/submission"
+task_dir="$(mktemp -d)"
+cd "$task_dir"
+mkdir -p unrelated/empty && head -c 1024 /dev/urandom > unrelated/sentinel.bin
+# workspace: generated inputs + TASK.md (see tests/adversarial/cases_cp3.py); easiest:
+python3 tests/adversarial/runner.py --submission "$SUBMISSION_DIR" --label repro --only PG-F --keep
+```
+
+**Expected:**
+
+All requirements graded items correct (see the failing items below).
+
+**Observed:**
+
+Exit code 0 after 219.0s, 16 model calls; message: `Stopped early (repeated actions). (harness checks: 12/9 example commands ran cleanly)`
+Score: **9/12**. Endpoint errors the agent retried through during the run: 0.
+- FAIL req 8: monthly --json: args=['monthly', '--json'] want='{"2025-01": "393800.64", "2025-02": "345952.66", "2025-03": "391879.31", "2025-04": "369449.45", "2025-05": "387183.98", "2025-06": "380158.55", "2025-07": "381'/exit 0 got='2025-01\t393800.64\n2025-02\t345952.66\n2025-03\t391879.31\n2025-04\t369449.45\n2025-05\t387183.98\n2025-06\t380158.55\n2025-07\t381452.94\n2025-08\t401018.60\n2025-09\t366511.9'/exit 0 stderr=
+- FAIL req 8: monthly --json option first: args=['monthly', '--json'] want='{"2025-01": "393800.64", "2025-02": "345952.66", "2025-03": "391879.31", "2025-04": "369449.45", "2025-05": "387183.98", "2025-06": "380158.55", "2025-07": "381'/exit 0 got='2025-01\t393800.64\n2025-02\t345952.66\n2025-03\t391879.31\n2025-04\t369449.45\n2025-05\t387183.98\n2025-06\t380158.55\n2025-07\t381452.94\n2025-08\t401018.60\n2025-09\t366511.9'/exit 0 stderr=
+- FAIL req 9: median even count (small): args=['median', '--category', 'FOOD', '--file', '/var/folders/0f/gqtdhmm903j6ybsjnhdk8zm80000gn/T/adv_pg_ocvpoq8l/case.csv'] want='3.50\n'/exit 0 got='0.00\n'/exit 0 stderr=''
+- FAIL req 9: median main file: args=['median', '--category', 'Books'] want='120.86\n'/exit 0 got='0.00\n'/exit 0 stderr=''
+- FAIL req 11: export: stdout='wrote agent_export.csv\n' code=0 file='\ufeffcategory,total\nbooks,684158.73\nentertainment,680305.05\nfood,693874.79\ngifts,684158.73\nhealth,687744.19\nhome & garden,676703.45\nrent,686476.24\ntransport,675589.' want='category,total\nbooks,684158.73\nentertainment,680305.05\nfood,693874.79\ngifts,684158.73\nhealth,687744.19\nhome & garden,676703.45\nrent,686476.24\ntransport,675589.3'
+
+### `DB-B01`: Debugging (CP3, grader-like)
+
+**What it attacks:** The cause is not a lock: the innermost 'Caused by' is java.util.concurrent.TimeoutException, whose first frame is java's FutureTask; the real component SupplierFeedClient is the next frame and has its own WARN line. The root-cause check may steer the model to the wrong class. Key 11 asks for the component's timeout instead of a lock name.
+
+**Reproduce:**
+
+```bash
+SUBMISSION_DIR="/absolute/path/to/your/submission"
+task_dir="$(mktemp -d)"
+cd "$task_dir"
+mkdir -p unrelated/empty && head -c 1024 /dev/urandom > unrelated/sentinel.bin
+# workspace: generated inputs + TASK.md (see tests/adversarial/cases_cp3.py); easiest:
+python3 tests/adversarial/runner.py --submission "$SUBMISSION_DIR" --label repro --only DB-B01 --keep
+```
+
+**Expected:**
+
+All REPORT.json keys graded items correct (see the failing items below).
+
+**Observed:**
+
+Exit code 0 after 38.9s, 6 model calls; message: `The root cause component is SupplierFeedClient.`
+Score: **11/12**. Endpoint errors the agent retried through during the run: 0.
+- FAIL feed_timeout_ms: want 25000 (int) got 20000 (int)
+
+### `DB-B03`: Debugging (CP3, stress)
+
+**What it attacks:** The gateway retried upstream: one req= has a first upstream_trace (connection reset, no hold) and a second one that waited on the hold and failed. The answer is the second trace.
+
+**Reproduce:**
+
+```bash
+SUBMISSION_DIR="/absolute/path/to/your/submission"
+task_dir="$(mktemp -d)"
+cd "$task_dir"
+mkdir -p unrelated/empty && head -c 1024 /dev/urandom > unrelated/sentinel.bin
+# workspace: generated inputs + TASK.md (see tests/adversarial/cases_cp3.py); easiest:
+python3 tests/adversarial/runner.py --submission "$SUBMISSION_DIR" --label repro --only DB-B03 --keep
+```
+
+**Expected:**
+
+All REPORT.json keys graded items correct (see the failing items below).
+
+**Observed:**
+
+Exit code 0 after 165.7s, 42 model calls; message: `Stopped early (repeated actions). Unresolved: payment_intent_id: not set yet; payment_amount_cents: not set yet`
+Score: **10/12**. Endpoint errors the agent retried through during the run: 0.
+- FAIL payment_intent_id: want 'pi_gkPbb2n6ExeMnLCQ' (str) got '' (str)
+- FAIL payment_amount_cents: want 26630 (int) got 0 (int)
+
+### `PG-W`: Programming (CP3, grader-like)
+
+**What it attacks:** The word-count practice task (wordstat.py, 4 requirements): a non-CSV program, used to re-time the programming loop with the self-review and probes.
+
+**Reproduce:**
+
+```bash
+SUBMISSION_DIR="/absolute/path/to/your/submission"
+task_dir="$(mktemp -d)"
+cd "$task_dir"
+mkdir -p unrelated/empty && head -c 1024 /dev/urandom > unrelated/sentinel.bin
+# workspace: generated inputs + TASK.md (see tests/adversarial/cases_cp3.py); easiest:
+python3 tests/adversarial/runner.py --submission "$SUBMISSION_DIR" --label repro --only PG-W --keep
+```
+
+**Expected:**
+
+All requirements graded items correct (see the failing items below).
+
+**Observed:**
+
+Exit code 0 after 170.6s, 18 model calls; message: `Stopped early (repeated actions). (harness checks: 6/4 example commands ran cleanly) (restored best version v1)`
+Score: **3/4**. Endpoint errors the agent retried through during the run: 0.
+- FAIL req 4 find: got ['121\n', 'none\n', ''] want ['121\n', 'none\n', '1,2\n']
+- extra files left in the workspace: ['wordstat.py']
 
 ## Failed cases on `final`
 

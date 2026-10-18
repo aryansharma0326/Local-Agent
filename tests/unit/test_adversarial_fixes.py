@@ -20,6 +20,10 @@ class StatementTurns(unittest.TestCase):
     """CX-12/15/17/18: first-turn statements that contain a file-like verb."""
 
     STATEMENTS = [
+        "Update: my sister's birthday is on the 14th of June.",   # held-out phrasings
+        "FYI: my gym closes at 9 PM on Sundays.",
+        "Heads up: the team offsite moved to Thursday.",
+        "Note: my locker code is 4417.",
         "Read receipts are turned on for my phone.",                # round 2: verb-like nouns
         "List prices at my store went up by 5 percent this month.",
         "Check-in time at my hotel is 3 PM.",
@@ -34,6 +38,11 @@ class StatementTurns(unittest.TestCase):
         "My project code name is Cedar. Remember it for this conversation.",
     ]
     REQUESTS = [
+        "I would appreciate a summary of a.txt and b.txt in sum.txt.",
+        "We need a file plan.txt that says launch on Monday.",
+        "My notes file todo.txt should have three lines: a, b, c.",
+        "We should delete draft.txt.",
+        "Update: delete draft.txt.",
         "Remove rows that are cancelled.",
         "My notes.txt needs to be deleted.",
         "Count the rows in data.csv.",
@@ -245,6 +254,87 @@ class Round2(unittest.TestCase):
             self.assertIn("CHECK", r.set({"root_cause_component": "CouponBatchLoader"}))
         finally:
             shutil.rmtree(ws)
+
+
+class Round3Debug(unittest.TestCase):
+    def _report(self, ws, seed, variant=None):
+        import glob
+        import report
+        sys.path.insert(0, os.path.join(helpers.ROOT, "tests", "adversarial", "cp3"))
+        import gen_incident
+        key, prompt = gen_incident.write(seed, ws, variant=variant)
+        r = report.Report(Sandbox(ws), "REPORT.json", taskspec.report_keys(prompt), 12,
+                          sorted(glob.glob(os.path.join(ws, "logs", "*.log"))), anchors=["ORD-77341"])
+        return r, key
+
+    def test_timestamp_from_the_named_event_line(self):  # item 13
+        import re
+        ws = tempfile.mkdtemp()
+        try:
+            r, key = self._report(ws, 21, "pool")
+            r.set(dict(key))
+            self.assertTrue(r.check("hold_queued_at").startswith("ok"))
+            log = open(os.path.join(ws, "logs", "inventory.log")).read()
+            created = re.search(r"(\S+ \S+) INFO  \[[^]]+\] c.s.i.HoldService - hold=%s status=CREATED"
+                                % key["hold_id"], log).group(1)
+            out = r.set({"hold_queued_at": created})
+            self.assertIn(key["hold_queued_at"], out)
+        finally:
+            shutil.rmtree(ws)
+
+    def test_near_miss_identifier(self):  # item 12
+        import report
+        self.assertEqual(report._edit_distance("SkuIndexRebuilders", "SkuIndexRebuilder", 2), 1)
+        ws = tempfile.mkdtemp()
+        try:
+            r, key = self._report(ws, 14)
+            r.set(dict(key))
+            for k in key:
+                self.assertTrue(r.check(k).startswith("ok"), (k, r.check(k)))
+        finally:
+            shutil.rmtree(ws)
+
+
+class Round3Programming(unittest.TestCase):
+    def test_transient_endpoint_failure_is_retried(self):  # item 14
+        import types
+        import deep
+        from errors import AgentError  # noqa: F401
+        from llm import LLMError
+        calls, waits = [], []
+
+        def complete(msgs, **kw):
+            calls.append(1)
+            if len(calls) == 1:
+                raise LLMError("The language model request failed (connection failure (SSLV3_ALERT_BAD_RECORD_MAC)).")
+            return "REPLY"
+        fake = types.SimpleNamespace(llm=types.SimpleNamespace(complete=complete),
+                                     tools=types.SimpleNamespace(schemas=lambda: []),
+                                     _TRANSIENT=deep.DeepAgent._TRANSIENT)
+        out = deep.DeepAgent._call_model(fake, [], 10, 1, 60, sleep=waits.append)
+        self.assertEqual((out, len(calls), waits), ("REPLY", 2, [5]))
+
+        def bad(msgs, **kw):
+            raise LLMError("The language model request failed (HTTP 401).")
+        fake.llm = types.SimpleNamespace(complete=bad)
+        with self.assertRaises(LLMError):
+            deep.DeepAgent._call_model(fake, [], 10, 1, 60, sleep=waits.append)
+        self.assertEqual(waits, [5])  # a non-transient error is not retried
+
+    def test_run_command_allowlist(self):  # item 16
+        import deeptools
+        ws, scratch = tempfile.mkdtemp(), tempfile.mkdtemp()
+        try:
+            with open(os.path.join(ws, "p.py"), "w") as f:
+                f.write("print('ok')\n")
+            t = deeptools.DeepTools(Sandbox(ws), scratch, "programming", ["p.py"], set())
+            self.assertIn("ok", t.call("run_command", {"command": "python3 p.py"}))
+            for bad in ("ls", "python3 p.py | cat", "python3 p.py && rm -rf ~", "python3 -m pip install x",
+                        "python3 p.py > x.txt", "bash -c 'python3 p.py'"):
+                self.assertIn("refused", t.call("run_command", {"command": bad}), bad)
+        finally:
+            shutil.rmtree(ws)
+            shutil.rmtree(scratch)
 
 
 if __name__ == "__main__":
