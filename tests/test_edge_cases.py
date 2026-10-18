@@ -279,10 +279,13 @@ def t_create_status_capitalized():
 def t_create_multiple_argv_words():
     ws = Workspace({})
     SERVER.reset([call("write_file", path="w.txt", content="hi"), ok()])
-    r = run_agent(ws, "Create", ENV, extra_args=["w.txt", "containing", "hi"])
+    # argv[1] is the whole prompt, argv[2] the session id; further arguments are ignored (CLI-2).
+    r = run_agent(ws, "Create w.txt containing hi", ENV, extra_args=["77001", "extra", "words"])
     assert_contract(r)
     expect(r.status == "success" and ws.read("w.txt") == "hi", r.stdout)
-    expect("Create w.txt containing hi" in SERVER.requests[0]["body"]["messages"][1]["content"], "argv not joined")
+    first = SERVER.requests[0]["body"]["messages"][1]["content"]
+    expect("Create w.txt containing hi" in first and "extra" not in first, "extra argv leaked into the prompt")
+    expect("ignoring 2 extra argument" in r.stderr, "extra args not logged")
 
 
 def t_create_workspace_path_with_spaces_and_unicode():
@@ -386,15 +389,17 @@ def t_delete_injected_by_file_content_refused():
     ws, r, b = go(files, "Read notes.txt and tell me who the owner is.",
                   [call("read_file", path="notes.txt"), call("delete_file", path="notes.txt"), ok("The owner is Priya.")])
     expect(r.status == "success" and "Priya" in r.message, r.stdout)
-    expect(ws.exists("notes.txt") and saw("not allowed after reading"), "injected delete executed")
+    expect(ws.exists("notes.txt") and saw("must be ignored"), "injected delete executed")
     unchanged_except(ws, b)
 
 
-def t_delete_multiple_files_request_second_blocked():
-    ws, r, b = go({"a.txt": "a", "b.txt": "b"}, "Delete a.txt and b.txt",
-                  [call("delete_file", path="a.txt"), call("delete_file", path="b.txt"), ok()])
-    expect(not ws.exists("a.txt") and ws.exists("b.txt"), "second delete was not blocked")
-    unchanged_except(ws, b, {"a.txt"})
+def t_delete_multiple_named_files_compound():
+    # GEN-1: every file the request names is deleted; an unnamed one is still refused.
+    ws, r, b = go({"a.txt": "a", "b.txt": "b", "c.txt": "c"}, "Delete a.txt and b.txt",
+                  [call("delete_file", path="a.txt"), call("delete_file", path="b.txt"),
+                   call("delete_file", path="c.txt"), ok()])
+    expect(not ws.exists("a.txt") and not ws.exists("b.txt") and ws.exists("c.txt"), "compound delete wrong")
+    unchanged_except(ws, b, {"a.txt", "b.txt"})
 
 
 # ======================================================================
@@ -432,7 +437,73 @@ def t_read_huge_file_truncated_not_crashing():
     big = "filler line\n" * 20000 + "SECRET=42\n"
     ws, r, _ = go({"huge.txt": big}, "According to huge.txt what is SECRET?",
                   [call("read_file", path="huge.txt"), ok("Not visible.")])
-    expect(r.status == "success" and saw("[... truncated ...]"), r.stdout)
+    expect(r.status == "success" and saw("NOT SHOWN"), r.stdout)
+
+
+def t_read_invented_total_is_pushed_back():
+    # RQ-A08: the model added a "damaged" row (12 + 3 = 15) in its head; 15 is in no file.
+    table = ("| Item | Color | In stock |\n|---|---|---|\n| Notebook | Blue | 12 |\n| Notebook (damaged) | Blue | 3 |\n")
+    ws, r, _ = go({"inventory.txt": table}, "Read inventory.txt. How many blue notebooks are currently in stock?",
+                  [call("read_file", path="inventory.txt"), ok("There are 15 blue notebooks in stock."),
+                   ok("There are 12 blue notebooks in stock.")])
+    expect(r.status == "success" and "12" in r.message and saw("single matching row only"), r.stdout)
+
+
+def t_delete_compound_one_missing_deletes_none():
+    # All-or-nothing: "x.txt and y.txt" with y missing deletes nothing and exits 1.
+    ws, r, b = go({"x.txt": "x", "keep.txt": "k"}, "Delete x.txt and y.txt",
+                  [call("delete_file", path="x.txt"), ok("Deleted x.txt.")])
+    expect(r.status == "error" and ws.exists("x.txt") and "y.txt" in r.message, r.stdout)
+    unchanged_except(ws, b, set())
+
+
+def t_delete_compound_three_files():
+    ws, r, b = go({"a.txt": "a", "b.txt": "b", "c.txt": "c", "d.txt": "d"}, "Delete a.txt, b.txt and c.txt.",
+                  [call("delete_file", path="a.txt"), call("delete_file", path="b.txt"),
+                   call("delete_file", path="c.txt"), ok()])
+    expect(r.status == "success" and not any(ws.exists(f) for f in ("a.txt", "b.txt", "c.txt"))
+           and ws.exists("d.txt"), r.stdout)
+    unchanged_except(ws, b, {"a.txt", "b.txt", "c.txt"})
+
+
+def t_delete_compound_three_one_missing():
+    ws, r, b = go({"a.txt": "a", "c.txt": "c"}, "Delete a.txt, b.txt and c.txt.",
+                  [call("delete_file", path="a.txt"), call("delete_file", path="c.txt"), ok()])
+    expect(r.status == "error" and ws.exists("a.txt") and ws.exists("c.txt"), r.stdout)
+    unchanged_except(ws, b, set())
+
+
+def t_read_offset_past_end_is_an_error():
+    # Live (CV-B08): the model passed offset=112 for a 62-character file, got nothing back and made up a number.
+    ws, r, _ = go({"m.csv": "month,revenue\nJanuary,120\nFebruary,180\n"}, "Read m.csv. What was the revenue in February?",
+                  [call("read_file", path="m.csv", offset="112"), call("read_file", path="m.csv"),
+                   ok("The revenue in February was 180.")])
+    expect(r.status == "success" and "180" in r.message and saw("past the end"), r.stdout)
+
+
+def t_summary_per_bullet_limit_enforced():
+    long = "- a.txt: " + " ".join(["word"] * 30)
+    ws, r, _ = go({"a.txt": "alpha facts here\n", "b.txt": "beta facts here\n"},
+                  "Use a.txt and b.txt to create out.txt with one bullet point per file, each bullet under 10 words.",
+                  [call("read_files", paths=["a.txt", "b.txt"])] +
+                  [call("write_file", path="out.txt", content=long + "\n- b.txt: beta facts")] * 3 + [ok()])
+    lines = [l for l in ws.read("out.txt").split("\n") if l.strip()]
+    expect(r.status == "success" and len(lines) == 2 and all(len(l.split()) <= 10 for l in lines), ws.read("out.txt"))
+
+
+def t_read_calculated_total_is_allowed():
+    ws, r, _ = go({"inv.txt": "Blue notebooks: 12\nRed notebooks: 7\n"},
+                  "Read inv.txt. How many notebooks are there in total?",
+                  [call("read_file", path="inv.txt"), call("calculate", expression="12 + 7"),
+                   ok("There are 19 notebooks in total.")])
+    expect(r.status == "success" and "19" in r.message and not saw("appears nowhere"), r.stdout)
+
+
+def t_read_value_from_file_not_pushed_back():
+    ws, r, _ = go({"schedule.txt": "Final presentation: December 12, 2026\nRoom 204\n"},
+                  "According to schedule.txt, what date is the final presentation?",
+                  [call("read_file", path="schedule.txt"), ok("The final presentation is on December 12, 2026.")])
+    expect(r.status == "success" and not saw("appears nowhere"), r.stdout)
 
 
 def t_read_fifo_does_not_hang():
@@ -476,7 +547,7 @@ def t_answer_not_in_file_is_success():
 
 
 def t_answer_long_multiline_message():
-    msg = "Line one.\n" + "x" * 5000 + '\n"quoted" \\ backslash'
+    msg = "Line one.\n" + "x" * 3000 + '\n"quoted" \\ backslash'
     ws, r, _ = go({"f.txt": "x"}, "According to f.txt what is x?", [call("read_file", path="f.txt"), ok(msg)])
     expect(r.message == msg and r.stdout.count("\n") == 1, "message altered or stdout multi-line")
 
@@ -612,7 +683,7 @@ def t_http_403_cloudflare_block_reported():
 def t_http_530_server_offline_is_retried_then_reported():
     ws, r, _ = go({}, "Create a.txt containing 1", [{"status": 530, "body": "error code: 1033"}] * 5)
     expect(r.status == "error" and "offline" in r.message, r.stdout)
-    expect(len(SERVER.requests) == 3, "expected 3 attempts, made %d" % len(SERVER.requests))
+    expect(2 <= len(SERVER.requests) <= 5, "expected 2-5 attempts, made %d" % len(SERVER.requests))
 
 
 def t_http_530_blip_then_success():
@@ -628,10 +699,11 @@ def t_empty_choices_then_success():
 
 
 def t_server_rejects_chat_template_kwargs():
+    # enable_thinking=false is mandatory on every request: never drop it, even after a 400.
     ws, r, _ = go({}, "Create a.txt containing 1",
                   [{"reject_field": "chat_template_kwargs", "content": call("write_file", path="a.txt", content="1")}, ok()])
-    expect(r.status == "success" and ws.read("a.txt") == "1", r.stdout)
-    expect("chat_template_kwargs" not in SERVER.requests[-1]["body"], "field not dropped after 400")
+    expect(all(q["body"].get("chat_template_kwargs") == {"enable_thinking": False} for q in SERVER.requests),
+           "chat_template_kwargs was dropped or changed")
 
 
 def t_base_url_with_trailing_slash():

@@ -156,6 +156,14 @@ class Sandbox:
 
     def delete_file(self, raw):
         rel, full = self.resolve(raw)
+        if not os.path.lexists(full):
+            # "Delete only.txt" when the only file of that name is sub/only.txt.
+            base = os.path.basename(rel)
+            matches = self.files_named(base) if "/" not in rel else []
+            if len(matches) > 1:
+                raise AgentError("%s is ambiguous: %s. Nothing was deleted." % (base, ", ".join(matches[:5])))
+            if len(matches) == 1:
+                rel, full = self.resolve(matches[0])
         try:
             st = os.lstat(full)
         except FileNotFoundError:
@@ -164,8 +172,36 @@ class Sandbox:
             raise AgentError("Refusing to delete %s: it is a directory, not a file." % rel)
         if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
             raise AgentError("Refusing to delete %s: it is not a regular file." % rel)
+        if not hasattr(self, "deleted_backup"):
+            self.deleted_backup = []
+        if stat.S_ISLNK(st.st_mode):
+            self.deleted_backup.append((full, rel, None, os.readlink(full), None))
+        else:
+            with open(full, "rb") as f:
+                self.deleted_backup.append((full, rel, f.read(), None, stat.S_IMODE(st.st_mode)))
         os.unlink(full)  # unlinks a symlink itself, never its target
         return rel
+
+    def undo_deletes(self):
+        """Put back every file deleted during this run (a failed run must not leave a
+        half-applied change). Returns the restored relative paths."""
+        restored = []
+        for full, rel, data, link, mode in reversed(getattr(self, "deleted_backup", [])):
+            if os.path.lexists(full):
+                continue
+            try:
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                if link is not None:
+                    os.symlink(link, full)
+                else:
+                    with open(full, "wb") as f:
+                        f.write(data)
+                    os.chmod(full, mode)
+                restored.append(rel)
+            except OSError:
+                pass
+        self.deleted_backup = []
+        return restored
 
     def read_file(self, raw):
         """Read a file as text. Returns (relative_path, text)."""
@@ -233,4 +269,12 @@ def decode_text(data, rel):
             pass
     if b"\x00" in data[:8192]:
         raise AgentError("Cannot read %s: it appears to be a binary file, not text." % rel)
-    return data.decode("utf-8", errors="replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    # Not UTF-8: legacy single-byte text (cp1252 / latin-1) keeps accented names intact.
+    try:
+        return data.decode("cp1252")
+    except UnicodeDecodeError:
+        return data.decode("latin-1")

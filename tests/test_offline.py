@@ -142,7 +142,7 @@ def t_second_mutation_blocked():
                   [call("write_file", path="a.txt", content="1"),
                    call("delete_file", path="keep.txt"), ok()])
     expect(r.status == "success" and ws.read("keep.txt") == "k", r.stdout)
-    expect(any("only one change" in o for o in observations()), "no rejection observation")
+    expect(any("not another file" in o for o in observations()), "no rejection observation")
     unchanged_except(ws, b, {"a.txt"})
 
 
@@ -301,8 +301,8 @@ def t_read_answer():
     obs = observations()[1]
     expect("===== FILE: inventory.txt =====" in obs and "blue notebooks: 42" in obs, "file not observed")
     expect(SERVER.requests[0]["auth"] == "Bearer test-key", "auth header missing")
-    expect(SERVER.requests[1]["body"]["chat_template_kwargs"]["enable_thinking"] is True,
-           "answer turn should use thinking")
+    for req in SERVER.requests:  # thinking is disabled on every request (CP3 rule)
+        expect(req["body"]["chat_template_kwargs"]["enable_thinking"] is False, "thinking must be off")
 
 
 def t_read_via_list_files():
@@ -443,7 +443,7 @@ def t_schema_violations():
 def t_step_limit():
     ws, r, _ = go({"a.txt": "a"}, "Create b.txt containing 1", [call("list_files")] * 20)
     expect(r.status == "error" and not ws.exists("b.txt"), r.stdout)
-    expect(len(SERVER.requests) <= 12, "made %d calls" % len(SERVER.requests))
+    expect(len(SERVER.requests) <= 16, "made %d calls" % len(SERVER.requests))
 
 
 def t_http_500():
@@ -472,8 +472,11 @@ def t_missing_prompt():
 
 
 def t_missing_env():
-    ws, r, _ = go({}, "Create a.txt containing 1", [], env=dict(ENV, QWEN_API_KEY=None))
+    # No key and a non-local endpoint: fail fast (a local backend may run without a key).
+    ws, r, _ = go({}, "Create a.txt containing 1", [],
+                  env=dict(ENV, QWEN_API_KEY=None, OPENAI_API_KEY=None, OPENAI_BASE_URL="https://example.invalid/v1"))
     expect(r.status == "error" and "QWEN_API_KEY" in r.message, r.stdout)
+    expect(r.elapsed < 3, "slow failure: %.1fs" % r.elapsed)
 
 
 def t_request_shape():

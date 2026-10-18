@@ -11,7 +11,7 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RUN_AGENT = os.path.join(ROOT, "run_agent.sh")
+RUN_AGENT = os.environ.get("AGENT_UNDER_TEST") or os.path.join(ROOT, "run_agent.sh")  # held-out runs point elsewhere
 
 
 _ALL_WORKSPACES = []

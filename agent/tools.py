@@ -8,7 +8,7 @@ import csvtools
 from errors import AgentError
 
 MAX_FILE_CHARS = 60000   # per file, keeps observations inside Qwen3's 32k context
-MAX_TOTAL_CHARS = 90000  # all files of one read_files call together
+MAX_TOTAL_CHARS = 70000  # all files of one read_files call together (~28k tokens; CP1 sources are <= 40 KB)
 
 # Names models commonly use for our tools / arguments -> canonical names.
 TOOL_ALIASES = {
@@ -32,6 +32,9 @@ ARG_ALIASES = {
     "content_start": ("start", "from_text", "starts_with", "begin"),
     "content_end": ("end", "to_text", "ends_with", "finish_with"),
     "message": ("answer", "result", "text", "response", "reason"),
+    "reasoning": ("explanation", "thoughts", "rationale"),
+    "evidence": ("quote", "quotes", "source", "lines", "evidence_lines"),
+    "expression": ("expr", "formula", "calculation", "math"),
     "source_path": ("source", "src", "from", "from_path", "input_path", "path"),
     "destination_path": ("destination", "dest", "dst", "to", "to_path", "target_path", "output_path", "copy_path"),
     "output_path": ("output", "save_as", "destination_path", "destination", "out_path", "target_path"),
@@ -51,8 +54,9 @@ _INTERNAL_KEYS = ("aliases", "scalar")  # schema keys used by validation only
 
 
 class ToolResult:
-    def __init__(self, obs, read=(), wrote=None, deleted=None, computed=None):
+    def __init__(self, obs, read=(), wrote=None, deleted=None, computed=None, unread=None):
         self.obs = obs
+        self.unread = dict(unread or {})  # relpath -> offset where the unshown rest of a long file starts
         self.read = list(read)      # relative paths whose contents were read
         self.wrote = wrote          # (raw_path, content) for a created/overwritten file
         self.deleted = deleted      # raw_path of a deleted file
@@ -139,8 +143,25 @@ def build_tools(sandbox):
         return rel, text
 
     def read_file(args):
-        rel, text = _read(args["path"])
-        return ToolResult(label_file(rel, text), read=[rel])
+        rel, text = sandbox.read_file(args["path"])
+        try:
+            start = max(0, int(str(args.get("offset") or "0").strip()))
+        except ValueError:
+            raise AgentError("offset must be a whole number of characters")
+        if start and start >= len(text):
+            raise AgentError("offset %d is past the end of %s (it has %d characters); read it without an offset"
+                             % (start, rel, len(text)))
+        end = min(len(text), start + MAX_FILE_CHARS)
+        part = text[start:end]
+        unread = {}
+        if start or end < len(text):
+            note = "[characters %d-%d of %d shown]" % (start, end, len(text))
+            if end < len(text):
+                note += (" [THE REST OF THE FILE IS NOT SHOWN: call read_file with \"offset\": \"%d\" to read "
+                         "it before concluding that something is missing]" % end)
+                unread[rel] = end
+            part = part + "\n" + note
+        return ToolResult(label_file(rel, part), read=[rel], unread=unread)
 
     def read_files(args):
         files, seen = [], set()
@@ -164,7 +185,7 @@ def build_tools(sandbox):
         if set("*?[]") & set(args["path"]):
             raise AgentError("wildcards are not allowed; delete_file removes exactly one named file")
         rel = sandbox.delete_file(args["path"])
-        return ToolResult("OK: deleted %s." % rel, deleted=args["path"])
+        return ToolResult("OK: deleted %s." % rel, deleted=rel)
 
     def copy_file(args):
         src_rel, data = sandbox.read_bytes(args["source_path"])
@@ -179,6 +200,11 @@ def build_tools(sandbox):
     def _table(path):
         rel, text = sandbox.read_file(path)
         return rel, csvtools.Table(text, name=rel)
+
+    def calculate(args):
+        value, text = csvtools.evaluate(args["expression"])
+        return ToolResult("RESULT: %s = %s" % (args["expression"].strip(), text),
+                          computed=(csvtools.fmt_number(value), "%s = %s" % (args["expression"].strip(), text)))
 
     def csv_aggregate(args):
         rel, table = _table(args["path"])
@@ -211,7 +237,9 @@ def build_tools(sandbox):
         rel, table = _table(args["path"])
         new_text, removed, kept, sentence = csvtools.delete_rows(table, args["column"],
                                                                  args.get("operator", "equals"),
-                                                                 args.get("value", ""))
+                                                                 args.get("value", ""), args.get("values"),
+                                                                 args.get("and_column"), args.get("and_operator"),
+                                                                 args.get("and_value"))
         return _save_table(rel, args, new_text, sentence)
 
     path = {"type": "string", "description": "path relative to the workspace, e.g. 'docs/a.txt'"}
@@ -221,7 +249,11 @@ def build_tools(sandbox):
     scalar = {"type": "string", "scalar": True}
     tools = [
         Tool("list_files", "List all files in the workspace (recursive).", {}, list_files),
-        Tool("read_file", "Read one text or CSV file. Never modifies it.", {"path": path}, read_file),
+        Tool("read_file", "Read one text or CSV file. Never modifies it. Long files are shown in parts: pass "
+             "offset (a character position) to read the next part.",
+             {"path": path, "offset": {"type": "string", "scalar": True,
+                                       "description": "optional: character position to start reading from"}},
+             read_file, required=["path"]),
         Tool("read_files", "Read several text files at once (use for summaries: pass EVERY source file).",
              {"paths": {"type": "array", "items": {"type": "string"}, "description": "list of relative paths"}},
              read_files),
@@ -265,11 +297,27 @@ def build_tools(sandbox):
              {"path": csv_path, "column": {"type": "string", "description": "column to test"},
               "operator": {"type": "string", "description": "equals (default), not_equals, contains, "
                            "greater_than, greater_or_equal, less_than, less_or_equal, is_empty"},
-              "value": dict(scalar, description="value to compare with"), "output_path": out_path},
+              "value": dict(scalar, description="value to compare with"),
+              "values": {"type": "array", "items": {"type": "string"},
+                         "description": "optional: several values; a row matching ANY of them is removed "
+                                        "('cancelled or refunded')"},
+              "and_column": {"type": "string", "description": "optional second condition that must ALSO hold "
+                                                              "('qty is 0 AND status is pending')"},
+              "and_operator": {"type": "string", "description": "operator of the second condition"},
+              "and_value": dict(scalar, description="value of the second condition"), "output_path": out_path},
              csv_delete_rows, required=["path", "column"], mutates=True),
+        Tool("calculate", "Exact arithmetic on numbers copied from a file: + - * / and parentheses, e.g. "
+             "'37 + 12 - 4' or '(120 + 180) / 2'. Use it for every total, difference or average.",
+             {"expression": {"type": "string", "description": "arithmetic expression using only numbers"}},
+             calculate),
         Tool("finish", "End the task. Use status 'success' when done (message = short result, or the full "
-             "answer for questions) or 'error' when the task cannot be done (message = why).",
+             "answer for questions) or 'error' when the task cannot be done (message = why). For a question, "
+             "fill evidence and reasoning BEFORE message.",
              {"status": {"type": "string", "enum": ["success", "error"], "aliases": STATUS_ALIASES},
+              "evidence": dict(scalar, description="questions only: the exact line(s) copied from the file that "
+                                                   "answer the question"),
+              "reasoning": dict(scalar, description="questions only: one short sentence linking the evidence to "
+                                                    "each part of the question"),
               "message": {"type": "string", "description": "result or answer for the user"}},
              None, required=["status"]),
     ]

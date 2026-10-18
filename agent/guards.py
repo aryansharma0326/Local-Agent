@@ -6,6 +6,7 @@ import ast
 import json
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
 
 # ------------------------------------------------------------ JSON parsing
 def _loads_lenient(chunk):
@@ -81,7 +82,8 @@ def parse_tool_call(text):
 
 
 # ------------------------------------------------------------------- paths
-_PATH_TOKEN = re.compile(r"[\w\-./\\]*\w\.[A-Za-z0-9]{1,10}\b|[\w\-]+(?:/[\w\-.]+)+")
+_PATH_TOKEN = re.compile(r"[\w\-./\\]{0,200}\w\.[A-Za-z0-9]{1,10}\b|[\w\-]{1,100}(?:/[\w\-.]{1,100}){1,20}")
+_PATHS_CACHE = {}
 
 
 def nfc(s):
@@ -96,7 +98,18 @@ def norm_path(p):
 
 
 def prompt_paths(prompt):
-    """Path-like tokens mentioned in the request."""
+    """Path-like tokens mentioned in the request (memoized: called often)."""
+    hit = _PATHS_CACHE.get(prompt)
+    if hit is not None:
+        return list(hit)
+    out = _prompt_paths(prompt)
+    if len(_PATHS_CACHE) > 64:
+        _PATHS_CACHE.clear()
+    _PATHS_CACHE[prompt] = tuple(out)
+    return list(out)
+
+
+def _prompt_paths(prompt):
     out = []
     for m in _PATH_TOKEN.finditer(nfc(prompt)):
         tok = norm_path(m.group(0)).rstrip(".")
@@ -298,6 +311,7 @@ _NUM_WORDS = {
 }
 _NUM = (r"(\d{1,3}(?:,\d{3})+|\d{1,5}|"
         + "|".join(sorted((re.escape(k) for k in _NUM_WORDS), key=len, reverse=True)) + r")")
+_NUM_NC = _NUM.replace("(", "(?:", 1)
 _MAX_WORDS = (r"(?:at\s+most|no\s+more\s+than|not\s+more\s+than|maximum\s+of|a\s+max(?:imum)?\s+of|"
               r"max(?:imum)?\.?|up\s+to|not\s+(?:to\s+)?exceed(?:ing)?|within|no\s+longer\s+than|"
               r"limit(?:ed)?\s+(?:of|to)|<=|\u2264)")
@@ -313,6 +327,7 @@ def _limit_rules(unit):
         (_NUM + u + r"\s+(?:or\s+(?:less|fewer)|at\s+most|max(?:imum)?|limit)", 0),
         (_NUM + r"-" + unit.rstrip("s?").rstrip("(") + r"\b", 0),
         (r"\bin\s+" + _NUM + u, 0),
+        (r"\b(?:about|around|approximately|roughly|~)\s*" + _NUM + u, 0),
         (unit.rstrip("s?").rstrip("(") + r"\s+(?:limit|count)\s+(?:of|is)\s+" + _NUM, 0),
         (unit.rstrip("s?").rstrip("(") + r"\s+count\s+" + _UNDER + r"\s*" + _NUM, -1),
     ]
@@ -327,12 +342,87 @@ def _to_int(s):
     return int(s) if s.isdigit() else _NUM_WORDS[s]
 
 
-def _parse_limit(text, rules):
-    best = None
+_DESCRIBES_SOURCE = re.compile(r"\b(?:are|is|were|was)\s+(?:each\s+|all\s+|both\s+)?(?:about\s+|around\s+)?"
+                               r"(?:under|less|fewer|below|over|more|at\s+most|roughly|approximately|about|around|"
+                               r"\d)", re.I)
+
+
+def _source_sentence_spans(t):
+    """Character spans of sentences that describe the inputs ("The notes are each under 40 words.")
+    rather than the requested output; limits found there are not limits on the output."""
+    spans, pos = [], 0
+    for sent in re.split(r"(?<=[.!?])\s+", t):
+        start = t.find(sent, pos)
+        pos = start + len(sent)
+        if _DESCRIBES_SOURCE.search(sent) and not re.search(
+                r"\b(summar\w*|write|create|save|produce|make|into|output|combine|should|must|keep)\b", sent):
+            spans.append((start, pos))
+    return spans
+
+
+_ITEM = r"(?:bullet(?:\s+point)?|point|line|sentence|item|entry|paragraph)s?"
+_LIMIT_WORDS = (r"(?:(?:at\s+most|no\s+more\s+than|up\s+to|under|below|less\s+than|fewer\s+than|max(?:imum)?(?:\s+of)?|"
+                r"within|about|around|roughly)\s+)?")
+
+
+def _per_item_spans(t):
+    """Limit phrases that apply to each bullet/line/sentence, not the total:
+    'each bullet under 25 words', '3 bullet points of at most 15 words each',
+    '3 sentences, each under 20 words'."""
+    spans = [(m.start(), m.end()) for m in re.finditer(r"\b(?:each|every|per)\s+" + _ITEM + r"\b[^.;]{0,40}", t)]
+    spans += [(m.start(), m.end()) for m in re.finditer(_LIMIT_WORDS + _NUM + r"\s+words?\s+(?:(?:max(?:imum)?|at\s+"
+                                                         r"most|or\s+(?:less|fewer))\s+)?(?:each|apiece|per\s+"
+                                                         + _ITEM + r")\b", t)]
+    for m in re.finditer(r"\b" + _ITEM + r"\b[^.;]{0,25}?,?\s*each\s+" + _LIMIT_WORDS + _NUM + r"\s+words?", t):
+        spans.append((t.index("each", m.start()), m.end()))
+    return spans
+
+
+def item_unit(text):
+    """'sentence' when a per-item limit is about sentences, else 'line'."""
     t = nfc(text or "").lower()
+    for a, b in _per_item_spans(t):
+        ctx = t[max(0, a - 40):b]
+        if re.search(r"sentences?\b", ctx) and not re.search(r"bullet|line|point", ctx):
+            return "sentence"
+    return "line"
+
+
+def parse_item_word_limit(text):
+    """'each bullet under 25 words' -> 24 (a limit on every bullet/line), else None."""
+    t = nfc(text or "").lower()
+    for a, b in _per_item_spans(t):
+        piece = re.sub(r"\s+(?:each|apiece)\b.*$", "", t[a:b]) if not t[a:b].startswith(("each", "every", "per")) \
+            else t[a:b]
+        n = _parse_limit_raw(piece, _WORD_RULES) or _parse_limit_raw(re.sub(r"^(?:each|every|per)\s+(?:"
+                                                                            + _ITEM + r"\s+)?", "", piece) + "",
+                                                                     _WORD_RULES)
+        if not n:
+            m = re.search(_NUM + r"\s+words?", piece)
+            n = _to_int(m.group(1)) if m else None
+        if n:
+            return n
+    return None
+
+
+def _parse_limit(text, rules):
+    t = nfc(text or "").lower()
+    return _parse_limit_raw(t, rules, _source_sentence_spans(t) + _per_item_spans(t))
+
+
+def _parse_limit_raw(t, rules, skip=()):
+    best = None
     minimums = set()
+    unit = rules[1][0].rsplit(r"\s+", 1)[-1]
+    for m in re.finditer(_NUM_NC + r"\s*(?:to|-|\u2013|and)\s*" + _NUM + r"\s+" + unit, t):  # "50 to 80 words"
+        if not any(a <= m.start() < b for a, b in skip):
+            n = _to_int(m.group(1))
+            best = n if best is None or n < best else best
+            minimums.add(m.start(1))
     for pat, adj in rules:
         for m in re.finditer(pat, t):
+            if any(a <= m.start() < b for a, b in skip):
+                continue
             if adj is None:
                 minimums.add(m.start(1))
                 continue
@@ -342,6 +432,32 @@ def _parse_limit(text, rules):
             if n > 0 and (best is None or n < best):
                 best = n
     return best
+
+
+def parse_word_min(text):
+    """'at least 50 words' / '50 to 80 words' -> 50, else None (limits describing the sources are ignored)."""
+    t = nfc(text or "").lower()
+    skip = _source_sentence_spans(t)
+    for pat in (r"at\s+least\s+" + _NUM + r"\s+words?", r"\b" + _NUM + r"\s*(?:to|-|\u2013)\s*" + _NUM_NC + r"\s+words?",
+                r"\bbetween\s+" + _NUM + r"\s+and\s+" + _NUM_NC + r"\s+words?",
+                r"(?:no\s+(?:fewer|less)\s+than|minimum\s+of|at\s+least)\s+" + _NUM + r"\b(?=[^.;]{0,40}?\bwords?\b)"):
+        for m in re.finditer(pat, t):
+            if not any(a <= m.start() < b for a, b in skip):
+                return _to_int(m.group(1))
+    return None
+
+
+def split_inline_bullets(text):
+    """'- a. - b. - c.' on one line -> one bullet per line (the model sometimes runs them together)."""
+    out = []
+    for line in (text or "").split("\n"):
+        if _BULLET_LINE.match(line) and re.search(r"\s[-*\u2022]\s+\S", line[2:]):
+            parts = re.split(r"(?<=[.!?;:)])\s+(?=[-*\u2022]\s+\S)", line)
+            if len(parts) > 1:
+                out.extend(p.strip() for p in parts)
+                continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def parse_word_limit(text):
@@ -362,16 +478,18 @@ def trim_to_words(text, limit):
     """Cut text to at most `limit` words, preferring a sentence boundary."""
     if count_words(text) <= limit:
         return text
-    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    pieces = re.split(r"((?<=[.!?])\s+)", text.strip())  # keep the separators: bullets stay on their own lines
     out, n = [], 0
-    for s in sentences:
-        w = count_words(s)
+    for i in range(0, len(pieces), 2):
+        w = count_words(pieces[i])
         if n + w > limit:
             break
-        out.append(s)
+        if out:
+            out.append(pieces[i - 1])
+        out.append(pieces[i])
         n += w
     if out and n >= limit * 0.5:
-        return " ".join(out)
+        return "".join(out)
     words = text.split()[:limit]
     return " ".join(words).rstrip(",;:") + ("" if words[-1].endswith((".", "!", "?")) else ".")
 
@@ -398,3 +516,147 @@ def clean_generated(text):
     if m:
         text = m.group(1).strip()
     return text
+
+
+# ------------------------------------------- sentence / bullet constraints
+_COUNT_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+                "nine": 9, "ten": 10, "a single": 1, "single": 1}
+_CNT = r"(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|a single|single)"
+
+
+def _cnt(s):
+    s = s.lower()
+    return int(s) if s.isdigit() else _COUNT_WORDS[s]
+
+
+def bullet_per_source(text):
+    """'one bullet (point) per file / source / log' (the count is the number of sources)."""
+    return bool(re.search(r"\b(?:one|a|1)\s+(?:bullet(?:\s+point)?|point)\s+(?:per|for\s+each|for\s+every)\s+"
+                          r"(?:source\s+)?(?:file|source|log|document)\b", nfc(text or ""), re.I))
+
+
+def parse_bullet_count(text):
+    """'exactly 3 bullet points' / 'in three bullets' / '5 bullet points' -> 3/3/5, else None.
+    'one bullet per source file' -> the number of source files named (all paths but the output)."""
+    t = nfc(text or "")
+    m = re.search(r"\b" + _CNT + r"\s+(?:bullet(?:ed)?(?:\s+points?)?|bullets|points)\s+in\s+total\b", t, re.I)
+    if m:
+        return _cnt(m.group(1))
+    if re.search(r"\b(?:one|a|1)\s+(?:bullet(?:\s+point)?|point)\s+(?:per|for\s+each|for\s+every)\s+"
+                 r"(?:source\s+)?(?:file|source|log|document)\b", t, re.I):
+        n = len(prompt_paths(t)) - 1
+        return n if n > 1 else None
+    m = re.search(r"\b(?:exactly\s+|in\s+|as\s+|with\s+|of\s+|using\s+)?" + _CNT + r"\s+(?:short\s+|concise\s+)?"
+                  r"(?:bullet(?:ed)?(?:\s+points?)?|bullets|points)\b", nfc(text or ""), re.I)
+    return _cnt(m.group(1)) if m else None
+
+
+def parse_sentence_count(text):
+    """'in 2 sentences' / 'exactly three sentences' / 'one sentence' -> n, else None.
+    'at most N sentences' is a maximum and is handled by parse_sentence_max."""
+    t = nfc(text or "")
+    if re.search(r"\b(?:at most|no more than|up to|maximum of|fewer than|less than|under)\s+" + _CNT +
+                 r"\s+sentences?\b", t, re.I):
+        return None
+    m = re.search(r"\b" + _CNT + r"(?:-|\s+)sentences?\b", t, re.I)
+    return _cnt(m.group(1)) if m else None
+
+
+def parse_sentence_max(text):
+    m = re.search(r"\b(at most|no more than|up to|maximum of|fewer than|less than|under)\s+" + _CNT +
+                  r"\s+sentences?\b", nfc(text or ""), re.I)
+    if not m:
+        return None
+    n = _cnt(m.group(2))
+    return n - 1 if m.group(1).lower() in ("fewer than", "less than", "under") else n
+
+
+_BULLET_LINE = re.compile(r"^\s*(?:[-*\u2022]|\d{1,2}[.)])\s+\S")
+
+
+def count_bullets(text):
+    return sum(1 for l in (text or "").split("\n") if _BULLET_LINE.match(l))
+
+
+def count_sentences(text):
+    t = re.sub(r"\b(?:e\.g|i\.e|etc|vs|approx|Mr|Mrs|Ms|Dr|No)\.", "_", text or "", flags=re.I)
+    t = re.sub(r"(\d)\.(\d)", r"\1_\2", t)
+    parts = [p for p in re.split(r"(?<=[.!?])\s+|\n\s*\n", t.strip()) if re.search(r"\w", p)]
+    return len(parts)
+
+
+_NUM_TOKEN = re.compile(r"\d[\d,]*(?:[.:]\d+)*")
+
+
+def _norm_num(tok):
+    tok = tok.replace(",", "")
+    parts = re.split(r"([.:])", tok)
+    out = []
+    for p in parts:
+        if p in (".", ":"):
+            out.append(p)
+        else:
+            out.append(p.lstrip("0") or "0")
+    s = "".join(out)
+    if "." in s and ":" not in s:
+        s = s.rstrip("0").rstrip(".") if re.fullmatch(r"\d+\.\d+", s) else s
+    return s
+
+
+_DERIVED_ASK = re.compile(r"\b(total|sum|combined|altogether|in all|overall|average|mean|difference|how many|"
+                          r"count of|number of)\b", re.I)
+
+
+def _derived_values(sources):
+    """Totals a summary may legitimately state: sums of up to three source numbers and
+    the total / average of all of them (only for a modest set of numbers)."""
+    from itertools import combinations
+    vals = []
+    for tok in _NUM_TOKEN.findall(sources or ""):
+        if ":" in tok or tok.count(".") > 1:
+            continue
+        try:
+            v = Decimal(tok.replace(",", ""))
+        except InvalidOperation:
+            continue
+        if v not in vals:
+            vals.append(v)
+    out = set()
+    if not vals or len(vals) > 40:
+        return out
+    for k in (2, 3):
+        for combo in combinations(vals, k):
+            out.add(_norm_num(str(sum(combo))))
+    out.add(_norm_num(str(sum(vals))))
+    out.add(_norm_num(str((sum(vals) / len(vals)).quantize(Decimal("0.01")))))
+    return out
+
+
+def answer_unsupported_numbers(message, corpus):
+    """Multi-digit numbers an answer states that occur nowhere in `corpus` (the files read,
+    the question, the conversation and tool results). Single digits are ignored: small
+    counts ("3 contractors") are routinely stated without being written in the file."""
+    # CSV rows ("2,Raj,30,44") would otherwise read as thousands-separated numbers (3044): also match the
+    # comma-split values.
+    corpus = (corpus or "") + "\n" + (corpus or "").replace(",", " ")
+    return [tok for tok in unsupported_numbers(message, corpus)
+            if not re.fullmatch(r"\d", tok.replace(",", ""))]
+
+
+def unsupported_numbers(summary, sources, prompt=""):
+    """Numbers/times/dates in the summary that never occur in the sources
+    (after normalising leading zeros and thousands separators). When the request asks
+    for a total/sum/average, sums of the source numbers count as supported."""
+    have = set()
+    if _DERIVED_ASK.search(prompt or ""):
+        have |= _derived_values(sources)
+    for tok in _NUM_TOKEN.findall(sources or ""):
+        have.add(_norm_num(tok))
+        for piece in re.split(r"[.:]", tok.replace(",", "")):
+            have.add(piece.lstrip("0") or "0")
+    bad = []
+    for tok in _NUM_TOKEN.findall(summary or ""):
+        n = _norm_num(tok)
+        if n not in have and tok not in bad:
+            bad.append(tok)
+    return bad

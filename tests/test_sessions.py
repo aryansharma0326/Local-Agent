@@ -117,8 +117,11 @@ def t_same_id_in_another_workspace_is_separate():
     ws1, ws2 = Workspace({"sales.csv": SALES}), Workspace({"sales.csv": SALES})
     turn(ws1, "Read sales.csv and tell me the total of the revenue column.", 1001,
          [call("csv_aggregate", path="sales.csv", column="revenue", operation="sum"), ok("300")])
-    turn(ws2, "What is the average?", 1001, [fail("No earlier context.")])
-    expect("Conversation so far" not in first_message(), "history leaked across workspaces")
+    r = turn(ws2, "What is the average?", 1001, [fail("No earlier context.")])
+    # D-6: a reused id in a fresh workspace is a new conversation; SS-9: with nothing to
+    # refer to, the agent asks for clarification instead of guessing (no model call needed).
+    expect(r.status == "error" and "earlier turn" in r.message, r.stdout)
+    expect(not SERVER.requests, "the model was asked to guess without context")
 
 
 def t_no_session_id_is_stateless():
@@ -177,10 +180,14 @@ def t_earlier_instruction_and_value_are_available():
 # ======================================================================
 # Argument handling
 # ======================================================================
-def t_non_numeric_second_argument_is_not_a_session():
+def t_non_numeric_second_argument_is_a_hashed_session():
+    # argv[2] is always the session id (CLI-2); non-digit ids are hashed (SS-3).
     ws = Workspace({})
-    turn(ws, "Create a.txt containing", "hello", [call("write_file", path="a.txt", content="hello"), ok()])
-    expect("Create a.txt containing hello" in first_message(), "arguments were not joined into the prompt")
+    turn(ws, "Create a.txt containing hello", "abc", [call("write_file", path="a.txt", content="hello"), ok()])
+    expect("Create a.txt containing hello" in first_message() and "abc" not in first_message().split("Request:")[-1],
+           "session id leaked into the prompt")
+    turn(ws, "Delete it.", "abc", [call("delete_file", path="a.txt"), ok()])
+    expect("Conversation so far" in first_message() and not ws.exists("a.txt"), "named session lost its history")
 
 
 def t_session_id_with_whitespace_and_leading_zeros():
@@ -190,8 +197,8 @@ def t_session_id_with_whitespace_and_leading_zeros():
     turn(ws, "What is the average?", "0042",
          [call("csv_aggregate", path="sales.csv", column="revenue", operation="average"), ok("150")])
     expect("Conversation so far" in first_message(), "whitespace around the id broke the session")
-    turn(ws, "What is the average?", "42", [fail("no context")])
-    expect("Conversation so far" not in first_message(), "'42' and '0042' must be different sessions")
+    r = turn(ws, "What is the average?", "42", [fail("no context")])
+    expect(r.status == "error" and not SERVER.requests, "'42' and '0042' must be different sessions")
 
 
 def t_missing_prompt_with_session_id():
@@ -279,6 +286,48 @@ def t_csv_row_sum_candidates():
                    columns=["interview_score", "test_score"]), ok("The result is 78.5.")])
     expect(r.status == "success" and "78.5" in r.message, r.stdout)
     expect(ws.read("candidates.csv") == CANDIDATES, "source modified")
+
+
+def t_heldout_update_label_statement_is_acknowledged():
+    ws = Workspace({})
+    r = turn(ws, "Update: my sister's birthday is on the 14th of June.", 4101,
+             [ok("Noted: your sister's birthday is on the 14th of June.")])
+    expect(r.status == "success", r.stdout)
+    r = turn(ws, "When is my sister's birthday?", 4101, [ok("Your sister's birthday is on the 14th of June.")])
+    expect(r.status == "success" and "14" in r.message, r.stdout)
+
+
+def t_heldout_statement_shaped_delete_is_not_faked():
+    ws = Workspace({"draft.txt": "old draft"})
+    r = turn(ws, "We should delete draft.txt.", 4102, [ok("Done."), ok("Done.")])
+    expect(r.status == "error" and ws.exists("draft.txt"), "fake done accepted: " + r.stdout)
+    ws = Workspace({"draft.txt": "old draft"})
+    r = turn(ws, "We should delete draft.txt.", 4103, [call("delete_file", path="draft.txt"), ok("Deleted draft.txt.")])
+    expect(r.status == "success" and not ws.exists("draft.txt"), r.stdout)
+
+
+def t_heldout_statement_shaped_delete_later_in_session():
+    ws = Workspace({"draft.txt": "old draft"})
+    turn(ws, "My project code name is Cedar.", 4104, [ok("Noted.")])
+    r = turn(ws, "We should delete draft.txt.", 4104, [ok("Done."), ok("Done.")])
+    expect(r.status == "error" and ws.exists("draft.txt"), "fake done accepted after history: " + r.stdout)
+
+
+def t_heldout_request_shaped_writes_are_not_blocked():
+    ws = Workspace({})
+    r = turn(ws, "We need a file plan.txt that says launch on Monday.", 4105,
+             [call("write_file", path="plan.txt", content="launch on Monday"), ok("Created plan.txt.")])
+    expect(r.status == "success" and ws.read("plan.txt") == "launch on Monday", r.stdout)
+    ws = Workspace({})
+    r = turn(ws, "My notes file todo.txt should have the line buy milk.", 4106,
+             [call("write_file", path="todo.txt", content="buy milk"), ok("Created todo.txt.")])
+    expect(r.status == "success" and ws.read("todo.txt") == "buy milk", r.stdout)
+    ws = Workspace({"a.txt": "Alpha shipped the export.\n", "b.txt": "Beta slipped to Friday.\n"})
+    r = turn(ws, "I would appreciate a summary of a.txt and b.txt in sum.txt.", 4107,
+             [call("read_files", paths=["a.txt", "b.txt"]),
+              call("write_file", path="sum.txt", content="Alpha shipped the export; Beta slipped to Friday."),
+              ok("Created sum.txt.")])
+    expect(r.status == "success" and ws.exists("sum.txt"), r.stdout)
 
 
 def t_csv_question_about_values():
@@ -589,14 +638,15 @@ def t_corrupt_session_store_does_not_break_the_turn():
          [call("csv_aggregate", path="sales.csv", column="revenue", operation="sum"), ok("300")])
     store = os.environ.get("AGENT_SESSION_DIR") or __import__("common").SESSION_DIR
     for f in os.listdir(store):
-        if f.endswith("_4.json"):
+        if f == "session_4.json":
             with open(os.path.join(store, f), "w") as fh:
                 fh.write("{broken")
-    r = turn(ws, "What is the average?", 4,
+    r = turn(ws, "What is the average of the revenue column in sales.csv?", 4,
              [call("csv_aggregate", path="sales.csv", column="revenue", operation="average"), ok("150")])
     expect(r.status == "success" and "Conversation so far" not in first_message(), r.stdout)
+    expect(any(f.startswith("session_4.json.corrupt-") for f in os.listdir(store)), "corrupt file not set aside")
     turn(ws, "And the total?", 4, [call("csv_aggregate", path="sales.csv", column="revenue", operation="sum"), ok("300")])
-    expect("What is the average?" in first_message(), "history did not recover after the corrupt file")
+    expect("What is the average" in first_message(), "history did not recover after the corrupt file")
 
 
 def t_unwritable_session_dir_falls_back():
@@ -611,30 +661,31 @@ def t_unwritable_session_dir_falls_back():
              [call("csv_aggregate", path="sales.csv", column="revenue", operation="average"), ok("150")], env=env)
         expect("Read sales.csv and tell me the total" in first_message(), "history lost with an unwritable store")
     finally:
-        name = session_mod._file_name(ws.dir, "123456789")
-        for d in session_mod._candidates(ws.dir):
+        name = "session_%s.json" % session_mod.session_key("123456789")
+        for d in session_mod._candidates():
             try:
                 os.unlink(os.path.join(d, name))
             except OSError:
                 pass
 
 
-def t_history_keeps_only_the_last_30_turns():
+def t_history_keeps_only_the_last_40_turns():
     ws = Workspace({"sales.csv": SALES})
-    for i in range(32):
+    for i in range(42):
         turn(ws, "Question #%02d: total revenue in sales.csv?" % i, 77,
              [call("csv_aggregate", path="sales.csv", column="revenue", operation="sum"), ok("300")])
     sent = first_message()
-    expect("Question #00" not in sent and "Question #01" in sent and "Question #30" in sent, "wrong history window")
-    expect(sent.count("[Turn ") == 30, "history has %d turns" % sent.count("[Turn "))
+    expect("Question #00" not in sent and "Question #01" in sent and "Question #40" in sent, "wrong history window")
+    expect(sent.count("[Turn ") == 40, "history has %d turns" % sent.count("[Turn "))
+    expect(sent.count("  Action: ") == 8, "only the most recent turns should be verbatim")
 
 
 def t_session_ids_zero_and_leading_zero_differ():
     ws = Workspace({"sales.csv": SALES})
     turn(ws, "Read sales.csv and tell me the total of the revenue column.", "0",
          [call("csv_aggregate", path="sales.csv", column="revenue", operation="sum"), ok("300")])
-    turn(ws, "What is the average?", "00", [fail("no context")])
-    expect("Conversation so far" not in first_message(), "'0' and '00' shared history")
+    r = turn(ws, "What is the average?", "00", [fail("no context")])
+    expect(r.status == "error" and not SERVER.requests, "'0' and '00' shared history")
     turn(ws, "What is the average?", "0",
          [call("csv_aggregate", path="sales.csv", column="revenue", operation="average"), ok("150")])
     expect("Conversation so far" in first_message(), "session 0 lost its history")
@@ -726,6 +777,115 @@ def t_tool_and_arg_aliases_for_csv():
     r = turn(ws, "Copy sales.csv to b/sales.csv", 2,
              [json.dumps({"tool": "cp", "args": {"src": "sales.csv", "dst": "b/sales.csv"}}), ok()])
     expect(raw(ws, "b/sales.csv") == SALES.encode(), r.stdout)
+
+
+# ======================================================================
+# CONVERSATION-ONLY TURNS (HW1-2 grading report: these four cases failed)
+# A turn that only states a fact, corrects one, or asks about the conversation needs no file operation.
+# ======================================================================
+def t_grader_memory_recall():
+    ws = Workspace({"unrelated/sentinel.bin": b"\x00\x01"})
+    r1 = turn(ws, "My project code name is Cedar. Remember it for this conversation.", 6101,
+              [ok("Noted: your project code name is Cedar.")])
+    expect(r1.status == "success" and r1.code == 0, "statement turn failed: " + r1.stdout)
+    r2 = turn(ws, "What is my project code name?", 6101, [ok("Your project code name is Cedar.")])
+    expect(r2.status == "success" and "Cedar" in r2.message, r2.stdout)
+    expect("My project code name is Cedar" in first_message(), "turn 1 missing from the history")
+
+
+def t_grader_memory_correction():
+    ws = Workspace({})
+    for prompt, reply in (("My preferred drink is tea. Remember that.", "Noted: tea."),
+                          ("Correction: my preferred drink is coffee now, replacing tea.", "Updated: coffee.")):
+        r = turn(ws, prompt, 6303, [ok(reply)])
+        expect(r.status == "success" and r.code == 0, "%r failed: %s" % (prompt, r.stdout))
+    r = turn(ws, "What is my current preferred drink?", 6303, [ok("Your current preferred drink is coffee.")])
+    expect(r.status == "success" and "coffee" in r.message, r.stdout)
+
+
+def t_grader_session_separation():
+    ws = Workspace({})
+    for sid, name in ((6404, "Harbor"), (6405, "Meadow")):
+        r = turn(ws, "My project code name is %s. Remember it for this conversation." % name, sid, [ok("Noted.")])
+        expect(r.status == "success", r.stdout)
+    turn(ws, "What is my project code name?", 6404, [ok("Harbor")])
+    expect("Harbor" in first_message() and "Meadow" not in first_message(), "6404 saw 6405's history")
+    turn(ws, "What is my project code name?", 6405, [ok("Meadow")])
+    expect("Meadow" in first_message() and "Harbor" not in first_message(), "6405 saw 6404's history")
+
+
+def t_grader_session_separation_after_update():
+    ws = Workspace({})
+    for sid, prompt in ((6506, "My meeting day is Tuesday. Remember it for this conversation."),
+                        (6507, "My meeting day is Wednesday. Remember it for this conversation."),
+                        (6506, "My meeting has moved to Friday. Replace the earlier day with Friday.")):
+        r = turn(ws, prompt, sid, [ok("Noted.")])
+        expect(r.status == "success" and r.code == 0, "%r failed: %s" % (prompt, r.stdout))
+    turn(ws, "What is my current meeting day?", 6507, [ok("Wednesday")])
+    expect("Wednesday" in first_message() and "Friday" not in first_message(), "6507 history wrong")
+
+
+def t_first_turn_statements_without_remember_succeed():
+    # The grader's hidden wording may not say "remember": a plain statement must still be accepted.
+    for prompt in ("My favourite colour is green.", "Hello! My name is Sam.", "My budget is 500 dollars.",
+                   "Just so you know, I live in Boston.", "The file I care about is sales.csv."):
+        ws = Workspace({"sales.csv": "a\n1\n"})
+        r = turn(ws, prompt, 7001, [ok("Noted.")])
+        expect(r.status == "success" and r.code == 0, "%r refused: %s" % (prompt, r.stdout))
+
+
+def t_fake_success_on_file_requests_is_still_refused():
+    ws = Workspace({"notes.txt": "secret: 42"})
+    for prompt in ("Create notes2.txt containing hi", "Make a file called notes with the text hi",
+                   "Delete the old folder", "Summarize the report", "What does notes.txt say?"):
+        r = turn(ws, prompt, None, [ok("Done."), ok("Done.")])
+        expect(r.status == "error" and r.code == 1, "%r: fake success accepted: %s" % (prompt, r.stdout))
+
+
+def t_failed_tool_then_fake_success_is_refused():
+    ws = Workspace({})
+    r = turn(ws, "Use write_file on ../escape.txt", None,
+             [call("write_file", path="../escape.txt", content="x"), ok("done"), ok("done")])
+    expect(r.status == "error", "fake success after a failed tool call: " + r.stdout)
+
+
+def t_conversation_turn_creates_no_files():
+    ws = Workspace({"unrelated/sentinel.bin": b"\x00"})
+    before = ws.snapshot()
+    turn(ws, "My favourite colour is green. Remember it.", 42, [ok("Noted: green.")])
+    expect(ws.snapshot() == before, "a conversation-only turn changed the workspace")
+
+
+def t_refused_statement_is_redirected():
+    # Live failure: "I'm planning a trip to Lisbon in May." was answered with an "unsupported" error.
+    ws = Workspace(dict({"unrelated/sentinel.bin": b"\x00"}))
+    r = turn(ws, "I'm planning a trip to Lisbon in May.", 7101,
+             [call("finish", status="error", message="I cannot assist with planning trips."),
+              ok("Noted: you are planning a trip to Lisbon in May.")])
+    expect(r.status == "success" and r.code == 0 and "Lisbon" in r.message, r.stdout)
+    expect(saw("this is a conversation turn"), "refusal was not redirected")
+
+
+def t_refusal_redirect_happens_only_once():
+    ws = Workspace({})
+    r = turn(ws, "I'm planning a trip to Lisbon in May.", 7102,
+             [call("finish", status="error", message="no"), call("finish", status="error", message="still no")])
+    expect(r.status == "error" and len(SERVER.requests) == 2, "made %d calls: %s" % (len(SERVER.requests), r.stdout))
+
+
+def t_file_task_errors_are_not_redirected():
+    ws = Workspace({})
+    r = turn(ws, "Delete gone.txt", 7103, [call("delete_file", path="gone.txt"),
+                                          call("finish", status="error", message="Could not find gone.txt.")])
+    expect(r.status == "error" and "gone.txt" in r.message, r.stdout)
+    expect(not saw("this is a conversation turn"), "a real file-task error was redirected")
+
+
+def t_system_prompt_has_conversation_rule():
+    ws = Workspace({})
+    turn(ws, "My name is Sam.", 43, [ok("Hi Sam.")])
+    system = SERVER.requests[0]["body"]["messages"][0]["content"]
+    expect("Conversation turns:" in system and "no tool is needed" in system, "conversation rule missing")
 
 
 def main():

@@ -1,465 +1,445 @@
-# Homework 1 — File-management agent (Checkpoints 1 and 2)
+# Homework 1 — a from-scratch Qwen3-14B agent (Checkpoints 1, 2 and 3)
 
-A small agent harness, built from scratch, that works inside the current working directory.
-Qwen3-14B does the language understanding. Plain, deterministic Python does every filesystem operation and every calculation.
+The agent is a small harness written from scratch in Python (standard library only). Qwen3-14B, behind an
+OpenAI-compatible `/chat/completions` endpoint, decides what to do. Deterministic code does every filesystem,
+CSV, shell and validation step. No agent framework or SDK is used, and the configured endpoint is the only
+network call.
 
-- **Checkpoint 1:** create a file, delete a file, answer a question about a file, and summarize several files into a new file.
-- **Checkpoint 2:** multi-turn sessions (a numeric session ID as the second argument, with history kept across separate processes) and CSV tasks: answer questions about values, total or average a column, add values in a row, update a value in a row found by its ID, remove rows that match a condition, and save a copy of a table.
+It handles:
 
-Checkpoint 2 is built on the same framework. Every Checkpoint 1 capability, guard and test is unchanged and still passes.
+- **CP1**: create, delete, read-and-answer, and multi-file summaries.
+- **CP2**: multi-turn sessions across processes, session isolation, and CSV questions/edits.
+- **CP3**: programming tasks (write or fix a program against a spec) and debugging tasks (follow one failed
+  request through large logs and write a JSON report).
 
 ## Folder structure
+
 ```
-run_agent.sh          entry point (bash); finds its own directory and runs agent/main.py
-agent/main.py         entry: builds the harness, enforces the stdout JSON contract and exit codes
-agent/harness.py      the agent harness: bounded tool-calling loop, system prompt, guardrail checks
-agent/tools.py        tool registry: list_files, read_file, read_files, write_file, delete_file, copy_file,
-                      csv_aggregate, csv_row_sum, csv_update_cell, csv_delete_rows, finish
-                      (each with a JSON schema, argument validation and a sandboxed handler)
-agent/csvtools.py     deterministic CSV engine: exact decimal totals/averages, row sums, cell updates and
-                      row removal that keep every untouched row byte-for-byte
-agent/session.py      multi-turn session history, stored on disk per (workspace, session ID)
-agent/guards.py       deterministic guardrails: tool-call parsing, anti-hallucination path checks,
-                      literal-content restore, word-limit parsing/trimming
-agent/verify.py       independent verification: workspace snapshot before the task, disk checks after it
-agent/sandbox.py      workspace path validation + the only filesystem primitives (create/delete/read)
-agent/llm.py          OpenAI-compatible /chat/completions client (urllib), timeouts, retries, <think> stripping
-agent/errors.py       AgentError (user-facing error messages)
-tests/test_offline.py end-to-end tests through run_agent.sh against a scripted mock model server (no key needed)
-tests/test_sandbox.py unit tests for sandbox, tool schemas and guards
-tests/test_verify.py  verification tests: dishonest tools (a write that doesn't write, etc.) must never yield success
-tests/test_edge_cases.py  end-to-end edge cases with the mock model
-tests/test_csv.py     unit tests for the CSV engine, CSV/copy tools, session store and argument parsing
-tests/test_sessions.py  end-to-end multi-turn and CSV tests with the mock model (each turn a separate process)
-tests/check_run.py    run the agent and print what actually changed on disk next to what it claimed
-tests/run_offline.sh  runs every suite that needs no API key
-tests/test_live.py    live tests against the real Qwen3-14B endpoint, in two separated parts:
-                      Checkpoint 1 (single requests) and Checkpoint 2 (multi-turn conversations, names "cp2_...")
-tests/mock_server.py, tests/common.py   test helpers
-requirements.txt      empty on purpose: standard library only
+run_agent.sh            entry point (Bash 3.2 compatible, LF, executable; works via a symlink or `sh`)
+requirements.txt        no dependencies (standard library only)
+agent/
+  main.py               stdout guard, argv, signal handlers + watchdog, routing, session save
+  config.py             environment variables, deadlines, model-call caps, stderr logging
+  output.py             the single JSON emitter (emit-once, UTF-8 safe, length clamp)
+  llm.py                HTTP client: retries/backoff, fail-fast codes, token budgeting, call counter,
+                        native + text tool-call parsing, <think> stripping
+  router.py             heuristic task classification: simple | programming | debugging
+  harness.py            CP1/CP2 loop (one JSON tool call per turn, guardrails, on-disk verification)
+  tools.py              CP1/CP2 tools: list/read/write/delete/copy, calculate, csv_* tools, finish
+  guards.py             lenient JSON parsing, path checks, literal-content fidelity, summary limits
+  csvtools.py           deterministic CSV engine (Decimal, byte-preserving rewrites) and calculator
+  sandbox.py            workspace path sandbox and safe file primitives
+  verify.py             workspace snapshots and post-condition checks
+  session.py            persistent session store (locking, atomic writes, stale guard, working context)
+  deep.py               CP3 loop: native tool calls, pinned context + compaction, harness checks,
+                        best-version restore, wrap-up
+  deeptools.py          CP3 tools: read/read_lines/grep/log_stats, write/append/edit, run_command,
+                        run_python, notes, report_set, finish
+  prompts.py            CP3 system prompts and playbooks (generic, no task answers)
+  taskspec.py           prompt parsing: deliverables, report keys and types, example commands
+  report.py             JSON report writer and validator (verbatim, type and linkage checks)
+  profiling.py          CSV anomaly profile, log statistics, word-boundary grep
+  workspace.py          change audit: backup at start, restore unexpected changes at the end
+  errors.py             AgentError
+tests/                  offline + live test suites, fixtures and generators (see "Tests")
+  story_all.sh          one connected story through all three checkpoints (see "Trying it by hand")
+  smoke_all.py          one-command check of all three checkpoints, one step per objective
+  heldout.py            33 held-out black-box conversations
+  adversarial/          grader-style adversarial suite: cases_cp1/2/3.py, runner.py, make_report.py,
+                        cp3/ generators and reference tally, CASES.md (catalog), REPORT.md (results)
+scripts/make_submission.sh  builds dist/hw1_submission.zip after pre-package checks
+docs/                   the assignment texts (docs/assignment/CP1-3.md) and the engineering spec
+AUDIT.md, PLAN.md       requirement traceability matrix and plan
 ```
 
-## Language / runtime
-- Python 3 (standard library only, compatible with Python 3.8+). Developed with Python 3.13.2.
-- Bash is used only for the entry script (tested with GNU bash 3.2.57).
-- Operating system tested: macOS 27.0 (build 26A428, Darwin 27, Apple silicon / arm64).
-- Linux uses the same code paths, because only POSIX APIs are used. It has not been run on Linux.
+## Tested environment
 
-## Installation
-Nothing to install. You only need `python3` on `PATH`.
-
-## Running it locally
-You need Python 3.8 or newer and your Qwen API key. There's nothing to install.
-
-### What you need
-| Requirement | Details |
+| | |
 |---|---|
-| Operating system | macOS or Linux. Developed and tested on macOS 27.0 (build 26A428, Apple silicon / arm64). |
-| Shell | Bash. Tested with GNU bash 3.2.57 at `/bin/bash`; your terminal can be zsh, since the agent is started with `bash run_agent.sh`. |
-| Python | 3.8 or newer, available as `python3` on `PATH`. Tested with Python 3.13.2. Check with `python3 --version`. |
-| Python packages | None. Only the standard library is used; there is no virtual environment and no `pip install`. |
-| Network | HTTPS access to the Qwen endpoint, `https://llm.montii.me/v1`. No other host is contacted. |
-| API key | A key for that endpoint, passed in the `QWEN_API_KEY` environment variable. It is never stored in the submission. |
-| Environment variables | `OPENAI_BASE_URL`, `MODEL` and `QWEN_API_KEY`. All three are required. |
-| Standard tools | `printf`, `mkdir`, `cat`, `ls` and `chmod`, used only by the example commands below. |
+| OS | macOS 27.0.1 (Darwin 27.0.0, arm64): `Darwin Aryans-MacBook-Pro.local 27.0.0 ... RELEASE_ARM64_T8132 arm64` |
+| Python | 3.13.2 (the code targets Python ≥ 3.8; 3.9+ syntax/APIs are rejected by a static test) |
+| Bash | GNU bash 3.2.57 (`/bin/bash` on macOS); no Bash-4 features are used |
+| Model | `Qwen/Qwen3-14B` at `https://llm.montii.me/v1` (about 25 output tokens/s during development) |
 
-The offline tests need only Python and Bash. They start their own mock model on `127.0.0.1`, so they need no key and no internet.
+Linux is supported: only POSIX tools and the Python standard library are used. Docker and Python 3.8 were not
+available on the development machine, so the Linux and 3.8 checks are static (see "Known limitations").
 
-### Steps
-The commands below use the path where this submission lives on the development machine,
-`/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1`. Replace it with wherever you unpacked the submission.
+## Setup
 
-1. Save your key once, outside the submission folder:
+Nothing needs to be installed. You need `python3` (3.8 or newer) and `bash` on the PATH.
 
-```
-printf '%s' 'YOUR_KEY_HERE' > ~/.qwen_key && chmod 600 ~/.qwen_key
-```
+## Running
 
-2. Set the three environment variables in your terminal session:
-
-```
-export OPENAI_BASE_URL="https://llm.montii.me/v1" MODEL="Qwen/Qwen3-14B" QWEN_API_KEY="$(cat ~/.qwen_key)"
+```bash
+cd "$TASK_DIR"
+OPENAI_BASE_URL="https://llm.montii.me/v1" MODEL="Qwen/Qwen3-14B" QWEN_API_KEY="$KEY" \
+  bash "$SUBMISSION_DIR/run_agent.sh" "$PROMPT" ["$SESSION_ID"]
 ```
 
-3. Make a scratch workspace and go into it. The agent treats the folder you run it from as its workspace, so never run it from inside the submission folder.
+Stdout is always exactly one JSON object, `{"status": "success"|"error", "message": "..."}`, followed by a
+newline. The exit code is 0 if and only if the status is `success`. Diagnostics, including a
+`calls_used=N` line, go to stderr.
 
-```
-mkdir -p ~/agent_playground && cd ~/agent_playground
-```
+## Trying it by hand (for graders)
 
-4. Run the agent with a request. The path in quotes is the submission's `run_agent.sh`:
+### One story through all three checkpoints
 
-```
-bash "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1/run_agent.sh" "Create notes/hello.txt containing: Hello world"
-```
-
-It prints one JSON line, such as `{"status": "success", "message": "Created notes/hello.txt."}`. Its step-by-step log goes to stderr, so you'll see it in the terminal too. To hide the log, add `2>/dev/null` to the end of the command.
-
-Some example requests for the other three tasks:
-
-* Read and answer:
-
-```
-printf 'Final presentation: December 5\nReport due: December 12\n' > schedule.txt
+```bash
+bash tests/story_all.sh
 ```
 
-```
-bash "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1/run_agent.sh" "According to schedule.txt, when is the final presentation?"
-```
+This runs one connected scenario in a single workspace and a single session (77). It takes 5-7 minutes and
+prints each prompt, the agent's JSON reply and PASS/FAIL.
 
-* Summarize:
+1. A statement-only first turn: "My team lead is Priya Raman." (CP2 context)
+2. A create that uses that fact: "...a note addressed to my team lead by name." Then a read-and-answer, a
+   multi-file summary and a delete. (CP1)
+3. A CSV total, then the follow-up "What is the average?", then "Save a copy of the table", then a row
+   removal. (CP2 CSV, where each follow-up relies on an earlier turn)
+4. "Who is my team lead?" in session 78 (it must not know) and again in session 77 (it must). (CP2 isolation)
+5. The official `tally.py` task (requirements 1-6) and an incident-log debugging task (12 REPORT.json
+   keys). Each runs in its own sub-folder, the way the grader runs them. (CP3)
 
-```
-bash "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1/run_agent.sh" "Summarize schedule.txt and notes/hello.txt into reports/summary.txt in under 40 words."
-```
+### One command, one step per objective
 
-* Delete:
+`tests/smoke_all.py` runs one prompt for each main objective of every checkpoint, through `run_agent.sh`
+exactly as the grader does. Each step runs in a fresh temp workspace, and the script prints PASS/FAIL per
+step. It reads the key from `$QWEN_API_KEY` or `~/.qwen_key`.
 
-```
-bash "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1/run_agent.sh" "Delete notes/hello.txt."
-```
-
-To check the exit code after any run (0 means success, 1 means error):
-
-```
-echo $?
-```
-
-Running the test suites (see the **Tests** section below for every option). These are run from the submission folder.
-
-* Offline tests need no key:
-
-```
-cd "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1" && bash tests/run_offline.sh
+```bash
+python3 tests/smoke_all.py            # CP1 + CP2 + CP3, about 5 minutes (CP3 is most of it)
+python3 tests/smoke_all.py --no-cp3   # CP1 + CP2 only, about 1 minute
 ```
 
-* Live tests call the real Qwen endpoint and read the key from `~/.qwen_key`:
-
-```
-cd "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1" && python3 tests/test_live.py
-```
-
-* To run just one group of live cases, pass `cp1` or `cp2` for a whole checkpoint, or a name fragment (`create_`, `delete_`, `read_`, `summary_`, `edge_`, `cp2_`):
-
-```
-python3 tests/test_live.py summary_
-```
-
-### Checking what really happened
-The agent verifies its own work before it reports success, but you can also check the disk yourself.
-
-* Look at the result directly:
-
-```
-cat notes/hello.txt
-```
-
-```
-ls -la notes
-```
-
-* Or run the agent through `tests/check_run.py`. It prints the agent's JSON and exit code, then the files that were actually created, deleted or modified, with a content preview:
-
-```
-cd ~/agent_playground && python3 "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1/tests/check_run.py" "Create notes/hello.txt containing: Hello world"
-```
-
-### Useful extras
-* Save the step-by-step log to a file instead of the terminal:
-
-```
-bash "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1/run_agent.sh" "Delete notes/hello.txt." 2> agent.log
-```
-
-* Check that the three variables are set, without printing the key:
-
-```
-echo "$OPENAI_BASE_URL | $MODEL | key length: ${#QWEN_API_KEY}"
-```
-
-* The `export` line lasts only for the current terminal window. Run it again in every new terminal.
-* Remove the scratch workspace when you're done:
-
-```
-rm -r ~/agent_playground
-```
-
-### Troubleshooting
-| What you see | Cause and fix |
+| Step | Checkpoint objective |
 |---|---|
-| `Missing required environment variable(s): ...` | The `export` line wasn't run in this terminal. Run step 2 again. |
-| `HTTP 401: the API key was rejected` | The key is wrong or empty. Check `~/.qwen_key`, then run step 2 again. |
-| `HTTP 403: blocked by the endpoint's firewall` | The endpoint's firewall rejected the request. The agent already sends its own `User-Agent` to avoid this; if it still appears, the block is on the server side. |
-| `HTTP 502`, `520` to `524`, `530`, or `connection failure or timeout` | The Qwen server is down or unreachable (530 with code 1033 means its Cloudflare tunnel is offline). The agent retries a few times; wait and try again. In `tests/test_live.py` these show as `INFRA`, not `FAIL`. |
-| `Python 3.8+ is not installed.` | `python3` isn't on `PATH`, or it is older than 3.8. |
-| `Refusing path ...` | The request pointed outside the workspace, or at the agent's own code. This is intended. |
-| `Could not find ...` | The file isn't in the folder you ran the agent from. Check with `ls`. |
-| `Verification failed: ...` | The disk didn't match what the agent intended, so it refused to report success. |
+| create, delete, read-and-answer, multi-file summary | CP1: the four task types |
+| statement turn, recall in the same session, the same question in another session | CP2: context within a session, and session isolation |
+| CSV total, follow-up "What is the average?", "Save a copy of the table", remove rows | CP2: CSV operations, including follow-ups that use earlier turns |
+| the official `tally.py` prompt on a generated data file, graded on requirements 1-6 | CP3: programming |
+| an incident with four service logs, graded on all 12 REPORT.json keys (at least 11 must be right) | CP3: debugging |
 
-## How the grader runs it
+### Prompt by prompt in a terminal
+
+Define a shortcut once per terminal. Use the submission folder's path, and keep the key outside the
+submission:
+
+```bash
+agent() { OPENAI_BASE_URL="https://llm.montii.me/v1" MODEL="Qwen/Qwen3-14B" QWEN_API_KEY="$(cat ~/.qwen_key)" \
+  AGENT_STATE_DIR="$HOME/agent_playground_state" bash "$SUBMISSION_DIR/run_agent.sh" "$@"; echo "exit=$?"; }
+mkdir -p ~/agent_playground/all && cd ~/agent_playground/all   # the agent's workspace is the current folder
 ```
-cd /path/to/task_workspace
-OPENAI_BASE_URL="https://llm.montii.me/v1" MODEL="Qwen/Qwen3-14B" QWEN_API_KEY="..." \
-  bash /path/to/submission/run_agent.sh "$PROMPT" "$SESSION_ID"
+
+The trailing number is the session ID. Leave it out for independent CP1-style calls. Calls that share a
+number form one conversation, and a different number is a separate conversation.
+
+**CP1** (no number):
+
+```bash
+printf 'old\n' > old.txt; printf 'Blue notebooks: 12\nRed notebooks: 7\n' > inventory.txt; mkdir -p logs
+printf '09:02 Checkout latency alert fired.\n' > logs/start.txt
+printf '09:44 Root cause: misconfigured load balancer health check; fixed.\n' > logs/resolution.txt
+agent "Create notes/todo.txt containing: buy milk"
+agent "Delete old.txt."
+agent "Read inventory.txt. How many blue notebooks are currently in stock?"
+agent "Use logs/start.txt and logs/resolution.txt to create reports/summary.txt with a summary under 50 words."
 ```
-- The first argument is the complete prompt. The second is the numeric session ID (Checkpoint 2).
-- With no session ID, the call is stateless, exactly as in Checkpoint 1.
-- stdout is always exactly one JSON object, `{"status": "success"|"error", "message": "..."}`. Exit code is 0 on success and 1 on error. Diagnostics go to stderr.
-- Requested answers, including numeric results, are in `message`.
 
-## Checkpoint 2: multi-turn sessions
-Each call to `run_agent.sh` is a new process, so the conversation is saved on disk between calls.
+Expected: `notes/todo.txt` holds `buy milk`; `old.txt` is gone; the answer is 12; `reports/summary.txt` is
+under 50 words and names the load balancer.
 
-- **What is stored:** one small JSON file per session. For every turn it holds the prompt, the tool calls the agent made with their short results (for example `csv_aggregate {"path": "sales.csv", "column": "revenue", "operation": "sum"} -> ... = 300`), and the final status and message. File contents are not stored; the agent re-reads files, because they may have changed.
-- **How it is used:** the earlier turns are shown to the model before the new request, so "What is the average?" resolves to the same file and column as the previous calculation. Numbers are recomputed with the tools, not recalled.
-- **Separation:** history is keyed by the workspace directory and the session ID. Different session IDs never share history, and the same ID in a different task directory starts fresh.
-- **Where it is stored:** outside the task workspace, so no stray files appear among the task's files, and outside the submission, which may be read-only. The agent uses the first writable location from this list:
-  1. `$AGENT_SESSION_DIR`, if set (the tests use this);
-  2. `/tmp/file-agent-sessions-<uid>`;
-  3. the system temp directory;
-  4. `~/.cache/file-agent-sessions`;
-  5. as a last resort, a hidden `.agent_sessions` folder in the workspace, which the agent ignores and protects.
-- **Housekeeping:** histories older than 24 hours are ignored and removed. At most 30 turns are kept per session. A storage problem never fails the task.
-- **Failed turns are remembered too**, so "Sorry, I meant sales.csv" works after an error.
+**CP2** (sessions 7 and 8):
 
-The assignment's example, run from the submission folder with the three variables set:
-```
-submission_dir="$(pwd)"; task_dir="$(mktemp -d)"; cd "$task_dir"
+```bash
 printf 'month,revenue\nJanuary,120\nFebruary,180\n' > sales.csv
-bash "$submission_dir/run_agent.sh" "Read sales.csv and tell me the total of the revenue column." "1001"   # 300
-bash "$submission_dir/run_agent.sh" "What is the average?" "1001"                                         # 150
-bash "$submission_dir/run_agent.sh" "Save a copy of the table as reports/sales_copy.csv." "1001"
-cat reports/sales_copy.csv
+printf 'id,status\n1,shipped\n2,cancelled\n3,pending\n' > orders.csv
+agent "My project code name is Cedar." 7
+agent "What is my project code name?" 7
+agent "What is my project code name?" 8
+agent "Read sales.csv and tell me the total of the revenue column." 7
+agent "What is the average?" 7
+agent "Save a copy of the table as reports/sales_copy.csv." 7
+agent "In orders.csv, remove every row whose status is cancelled, and save the result as active.csv." 7
 ```
 
-## Checkpoint 2: CSV tasks
-The model chooses the operation and its arguments. Python code does the reading, the arithmetic and the rewriting, so results don't depend on the model's ability to add numbers or retype a table.
+Expected:
+- session 7 answers Cedar, and session 8 does not know it;
+- the total is 300 and the average is 150;
+- `reports/sales_copy.csv` equals `sales.csv`;
+- `active.csv` keeps rows 1 and 3.
 
-| Request | Tool | What the code guarantees |
+**CP3 programming**, about 2-4 minutes. `$SUBMISSION_DIR/tests/adversarial/cp3` holds the test generators;
+the agent never sees them.
+
+```bash
+mkdir -p ~/agent_playground/prog && cd ~/agent_playground/prog
+python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import prog_specs; open('transactions.csv','wb').write(prog_specs.generate('O', n=4000)); open('TASK.md','w').write(prog_specs.prompt('O'))" "$SUBMISSION_DIR/tests/adversarial/cp3"
+agent "$(cat TASK.md)" 3001
+python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import prog_specs; print(prog_specs.score(prog_specs.grade('O','.')))" "$SUBMISSION_DIR/tests/adversarial/cp3"
+```
+
+Expected: requirements 1-6 all `True`.
+
+**CP3 debugging**, about 1-3 minutes. The answer key is written one folder up, outside the agent's
+workspace.
+
+```bash
+mkdir -p ~/agent_playground/debug && cd ~/agent_playground/debug
+python3 -c "import sys, json; sys.path.insert(0, sys.argv[1]); import gen_incident; k,_=gen_incident.write(41,'.'); json.dump(k, open('../answer_key.json','w'), indent=1)" "$SUBMISSION_DIR/tests/adversarial/cp3"
+agent "$(cat TASK.md)" 3002
+python3 -c "import json; k=json.load(open('../answer_key.json')); r=json.load(open('REPORT.json')); [print('ok ' if r.get(x)==v else 'BAD', x, r.get(x), '| want', v) for x,v in k.items()]"
+```
+
+Expected: every line starts with `ok`.
+
+To see what the agent did, add `2> agent.log` to any call and read the log.
+
+## Environment variables
+
+| Variable | Required | Meaning |
 |---|---|---|
-| Question about values | `read_file` | The model answers from the rows it is shown. |
-| Total, average, min, max, count of a column | `csv_aggregate` | Exact decimal arithmetic (0.1 + 0.2 = 0.3). `1,200`, `$3.50` and `45%` are read as numbers; blank cells are skipped. |
-| Add values in a selected row | `csv_row_sum` | The row is found by its ID; the named columns are added exactly. |
-| Update a value in the row with a given ID | `csv_update_cell` | Only that cell changes. Every other row is kept byte-for-byte, including quoting and line endings. |
-| Remove rows matching a condition | `csv_delete_rows` | The header and all remaining rows are untouched. Conditions: equals, not equals, contains, greater/less than (or equal), is empty. Text matches ignore case. |
-| Save a copy of a table | `copy_file` | A byte-identical copy; parent folders are created. |
+| `OPENAI_BASE_URL` | no (default `https://llm.montii.me/v1`) | OpenAI-compatible base URL; `/chat/completions` is appended |
+| `MODEL` | no (default `Qwen/Qwen3-14B`) | model name |
+| `QWEN_API_KEY` | yes for remote endpoints | Bearer token; `OPENAI_API_KEY` is used if it is empty. With a localhost URL (Ollama/vLLM) an empty key is allowed |
+| `AGENT_TIME_BUDGET` | no | overrides the internal deadline in seconds (default 165 s, or 285 s for CP3 tasks) |
+| `AGENT_MAX_CALLS` | no | lowers the model-call cap (default 110; the grader allows 120) |
+| `AGENT_CALL_TIMEOUT` | no | per-request timeout cap in seconds (default 120) |
+| `AGENT_STATE_DIR` | no | session store directory (overrides the default locations below) |
+| `AGENT_SESSION_SCOPE` | no | `id+workspace` (default) or `id` (see "Sessions") |
+| `AGENT_LOG_FILE` | no | also append the stderr log to this file (keep it outside the workspace) |
+| `AGENT_TEMPERATURE` | no | sampling temperature (default 0.2; the CP1/CP2 loop uses 0.0) |
+| `AGENT_NO_THINK_SUFFIX` | no | `1` also appends `/no_think` for backends that ignore `chat_template_kwargs` (off for grading) |
+| `AGENT_DEBUG_DUMP` | no | development only: write the latest CP3 request to this file |
 
-Other details:
-- **Output path:** when the prompt says "save the result as X", the result goes to X and the original stays unchanged. If the model tries to overwrite the original instead, the harness refuses and tells it to use X. With no output named ("... and save the file"), the file itself is updated.
-- **Column names** match regardless of case, spaces or underscores (`Unit Price` matches `unit_price`). An unknown column returns the list of real columns, so the model can correct itself.
-- **Delimiters** `,` `;` tab and `|` are detected, and CRLF line endings are preserved.
-- **Safety nets:**
-  - If a request asks for a total or average and the model answers without calling the calculator, it is sent back once.
-  - A value the tool computed is added to the final message if the model left it out.
-  - If the model retypes a table as a "copy", the original's exact text is written instead.
-  - A hand-written `.csv` always ends with a newline.
-- **Multi-turn guards:** a file may be created, edited or deleted if it is named in the current request or in an earlier turn of the same session. One file may be changed per turn (several edits to that same file are allowed). A request that only asks a question can't modify the file.
-
-## Runs unattended in a sandbox
-The agent is built to be driven by fixed commands, with no human in the loop.
-- Its only input is the prompt passed as the first argument. `run_agent.sh` connects stdin to `/dev/null`, so nothing can ever block waiting for a reply.
-- Qwen is told there is no human to answer questions. It must act on the most reasonable interpretation, or finish with an error. If it still asks the user something, the harness rejects that once and makes it act.
-- The only network request is to `$OPENAI_BASE_URL/chat/completions`. There are no config files, no dependence on `$HOME`, and no locale requirement.
-- Nothing is written to the submission directory (`PYTHONDONTWRITEBYTECODE=1`), so a read-only submission works.
-- Every run ends with exactly one JSON object and an exit code, within about 170 s.
-
-These cases are covered by `tests/test_offline.py`:
-- a run with stdin left open, which must not hang;
-- a minimal environment with no `HOME` or locale;
-- a read-only copy of the submission running all four task types.
-
-## Verification: success is never taken on trust
-The agent checks the disk itself before it reports success (`agent/verify.py`).
-1. Before the task starts, it takes a SHA-256 snapshot of every entry in the workspace.
-2. Right after a write, it reads the file back and compares it byte-for-byte with the intended content. Right after a delete, it confirms the path is gone. If the check fails, the tool call counts as an error, however the tool itself answered.
-3. Just before printing `success`, it checks everything again against the starting snapshot:
-   - the target is present with the right bytes (for a write) or absent (for a delete);
-   - every other file is unchanged, with nothing removed and nothing unexpectedly created;
-   - for read and summary tasks, the source files are byte-identical.
-
-   Any discrepancy turns the result into `{"status":"error","message":"Verification failed: ..."}` with exit code 1.
-4. The model can't talk its way to success. A `finish(success)` with no completed operation is rejected.
-
-To see the ground truth yourself, run the agent through `tests/check_run.py` from a workspace:
-```
-cd /path/to/workspace
-python3 /path/to/submission/tests/check_run.py "Delete notes/old-draft.txt."
-```
-It prints the agent's JSON and exit code, then the files that were actually created, deleted or modified, with a content preview.
+Every request sends `"chat_template_kwargs": {"enable_thinking": false}`. Thinking mode is never used.
 
 ## How it works
-```
-prompt ─▶ Harness ──(system prompt + tool schemas + workspace listing + request)──▶ Qwen3-14B
-             ▲                                                                        │
-             │                                              {"tool": ..., "args": {...}}
-             │                                                                        ▼
-        observation ◀── execute in Sandbox ◀── guardrails ◀── schema validation ◀── parse
-             ... repeat until the model calls finish(status, message) ─▶ {"status","message"} on stdout
-```
-- **Tools** (`agent/tools.py`): `list_files`, `read_file`, `read_files`, `write_file`, `delete_file`, `copy_file`, `csv_aggregate`, `csv_row_sum`, `csv_update_cell`, `csv_delete_rows` and `finish`. Each tool has a JSON schema; the schemas are written into the system prompt. Bad arguments are rejected (wrong types, missing or unknown fields, bad enum values). Handlers only call `sandbox.py`. There is no shell tool, and model output is never executed as code.
-- **Loop** (`agent/harness.py`): the model makes one JSON tool call per turn. The harness validates it and applies the guardrails. Then it either executes the call or sends the error back as an observation, so the model can correct itself. The loop stops after 12 steps, after about 170 seconds, or after 3 consecutive malformed replies. Thinking mode is turned on only for turns where file contents are in context (answering and summarizing).
-- **Guardrails** (`agent/guards.py`, enforced by the harness):
-  - Only one file may be changed per task (several edits to that same file are allowed).
-  - A delete must name exactly a file named in the request, so `todo.md` won't match `todo-old.md`. Wildcards and directories are refused.
-  - The write target must be named in the request, and a source file that was read can never be overwritten.
-  - Quoted literal content is restored exactly from the prompt.
-  - A summary can't be written until every existing file named in the request has been read.
-  - Summary word limits are parsed from the request. Over-long content is sent back to the model up to twice, then trimmed deterministically.
-  - The model can't report success without doing any operation, or without writing a requested output file.
-- **Sandbox** (`agent/sandbox.py`):
-  - Paths must be relative. `..` and absolute paths are refused.
-  - Parent directories are resolved through symlinks and must stay inside the workspace.
-  - The agent never writes through a symlink, never deletes a directory, and never deletes more than one file.
 
-## Latest test results
-**Environment:** macOS 27.0 (Apple silicon), Python 3.13.2. The live tests used the endpoint `https://llm.montii.me/v1` with `Qwen/Qwen3-14B`.
+1. **Routing** (`router.py`). Strong signals send a prompt to the CP3 loop:
+   - a code deliverable together with "implement", "command-line tool" or "fix … tests";
+   - a JSON report together with logs or "root cause";
+   - a `TASK.md` file that matches the prompt.
 
-### Offline (run 2026-10-02 with `bash tests/run_offline.sh`)
-| Suite | Kind | Checkpoint | Result |
-|---|---|---|---|
-| `tests/test_sandbox.py` | unit | 1 | 53 / 53 passed |
-| `tests/test_verify.py` | unit | 1 + 2 | 24 / 24 passed |
-| `tests/test_csv.py` | unit | 2 | 61 / 61 passed |
-| `tests/test_offline.py` | end-to-end, mock model | 1 | 56 / 56 passed |
-| `tests/test_edge_cases.py` | end-to-end, mock model | 1 | 107 / 107 passed |
-| `tests/test_sessions.py` | end-to-end, mock model | 2 | 62 / 62 passed |
-| **Offline total** | | | **363 / 363 passed** (`ALL OFFLINE SUITES PASSED`) |
+   Everything else goes to the CP1/CP2 harness. So a CP3 misroute can never take a file, CSV or session task
+   away from the proven path.
+2. **CP1/CP2 harness** (`harness.py`).
+   - Each turn, the model returns one JSON tool call. The harness validates it and applies guardrails:
+     - exact-name delete allowlist;
+     - literal-content restoration;
+     - every summary source must be read before writing;
+     - word/sentence/bullet limits;
+     - numbers in a summary must come from the sources;
+     - arithmetic must go through `calculate` or the CSV tools.
+   - Answers are "evidence first": the model quotes the exact line, then reasons, then answers.
+   - Afterwards the harness checks the disk directly and accepts no unexpected change.
+   - Compound requests ("create a.txt … and delete b.txt") may change every file the request names.
+   - A follow-up with nothing to refer to in its own session ("What is the average?" in a new session) is
+     answered with a clarification error and no guessing.
+3. **CP3 loop** (`deep.py`). Native tool calling over a pinned context:
+   - system playbook;
+   - the task plus a harness pre-fetch: data profile, log statistics, and anchor-ID grep results;
+   - rolling tool exchanges, which are compacted when the 40,960-token budget gets tight;
+   - a PINNED STATE block: notes ledger, the current deliverable or report, and time and calls left.
 
-### Live (run on the author's machine with `python3 tests/test_live.py`)
-| Part | Result | Agent runs | Median per run | Mean per run | Slowest run |
-|---|---|---|---|---|---|
-| Checkpoint 1: single requests | **66 / 66 passed** | 66 | 3.4 s | 9.1 s | 72.3 s (`edge_create_long_line`) |
-| Checkpoint 2: multi-turn conversations | **25 / 25 passed** (58 turns) | 58 | 3.4 s | 4.3 s | 32.3 s (`cp2_row_sum_then_other_row`, turn 3) |
-| **Live total** | **91 / 91 passed** | 124 | 3.4 s | 6.9 s | 72.3 s |
+   *Programming*:
+   - After every write or edit, the harness compiles the program and runs the task's own example commands,
+     with placeholders filled from the data.
+   - It also runs option-order permutations, edge probes (unknown value, large N, missing file) and a
+     static lint. It reports a prioritized PROBLEMS list.
+   - The best version is kept and restored at wrap-up.
+   - Input files are protected, scratch files live outside the workspace, and the change audit restores
+     anything else.
 
-- Every run finished well under the 180 s limit. Each produced a single valid JSON object and the correct exit code.
-- **Slowest runs:**
-  - The 72.3 s run is the deliberately repetitive long-content case: the model loops while copying the text, and the harness completes the write from the request.
-  - Question answering runs with reasoning enabled, so those runs take about 6-15 s, and up to 53 s for the prompt-injection case.
-  - The Checkpoint 2 CSV turns, computed by the deterministic CSV tools, take about 3-5 s.
+   *Debugging*:
+   - The report file is written with type-correct placeholders immediately.
+   - `report_set` coerces types and checks three things for every value: it occurs verbatim in the logs, it
+     is linked to the failed request through a shared log record (decoy guard), and it has the right JSON
+     type.
+4. **Deadlines.**
+   - The internal budget is 165 s for CP1/CP2 and 285 s for CP3. Wrap-up starts 45 s before the end.
+   - A watchdog and the TERM/INT/HUP handlers still print valid JSON if anything hangs.
+   - At most 110 model calls are made, and wrap-up starts when 10 are left.
+
+## Sessions
+
+- With a second argument, history is stored in `session_<id>.json`. Digits are used as-is; any other id is
+  hashed with sha1, so `007` and `7` are different sessions.
+- The file goes in the first writable directory of:
+  1. `$AGENT_STATE_DIR`
+  2. `${XDG_STATE_HOME:-$HOME/.local/state}/hw1_agent/sessions`
+  3. `<submission>/.agent_state/sessions`
+  4. `${TMPDIR:-/tmp}/hw1_agent_<uid>/sessions`
+
+  The store is never inside the workspace. If no location is writable, the run is stateless.
+- Writes use `fcntl.flock`, read-modify-write, temp file + `os.replace`, and a schema version. A corrupt
+  file is set aside as `*.corrupt-<ts>`.
+- Each turn stores the prompt, actions, message and status, plus a structured working context: last files,
+  last CSV operation, created outputs and standing instructions.
+- The last 8 turns are shown verbatim and older ones are compacted. 40 turns are kept.
+- Scope (`AGENT_SESSION_SCOPE`): the default `id+workspace` treats a reused id from a different workspace as
+  a new conversation, and the old file is renamed `*.stale-<ts>`. `id` shares history across workspaces.
+- Without a session id nothing is read or written (CP1 calls never share context).
+
+## Design decisions
+
+| ID | Decision |
+|---|---|
+| D-1 | No trailing newline is added to created file content unless the user's content has one; multi-line content is joined with `\n`. |
+| D-2 | Creating a file that already exists overwrites it. |
+| D-3 | Deleting a missing file returns an error (exit 1) and changes nothing. |
+| D-4 | Path matching is case-sensitive; a bare file name that exists only once in a subfolder is resolved to it, an ambiguous one is an error. |
+| D-5 | If a summary source is missing, the run fails and no partial summary is written. |
+| D-6 | Sessions are keyed by id **and** workspace; history from a different workspace is stale (switch: `AGENT_SESSION_SCOPE=id`). |
+| D-7 | Session ids are exact strings (`007` ≠ `7`). |
+| D-8 | A follow-up with no referent in its own session returns an error asking which file/column is meant; the workspace is never scanned for a guess. |
+| D-9 | CSV text conditions are case-insensitive and trimmed; numbers compare numerically. |
+| D-10 | A CSV change with no output path modifies the file in place; with an output path the source is never modified. |
+| D-11 | Numbers in messages have no thousands separators; integers print without decimals; longer decimals also show a 2-decimal rounding. |
+| D-12 | Compound requests: every file the request names may be changed (e.g. "Delete a.txt and b.txt" deletes both); files it does not name are protected. |
+| D-13 | Thinking mode is disabled for every request (CP3 rule), including CP1/CP2 reruns; read answers use structured evidence → reasoning → answer instead. |
+| D-14 | CP3 programming: the harness runs only the task's own example commands plus generic CLI property checks (option order, unknown values, missing file); it never contains task-specific answers. |
+| D-15 | CP3 debugging: report values are taken verbatim from the logs; integers are coerced from numeric strings; keys not in the task are rejected. |
+| D-16 | The CP3 per-request timeout may reach 240 s for a whole-program write (the spec's 120 s cap would cut a ~3k-token write at 25 tokens/s); every wait still respects the run deadline. |
+| D-17 | A turn that only states something is acknowledged, never refused. A statement here means: no question, no request phrasing, no file named, and no sentence or clause that opens with an imperative. Example: "My total budget is 1200 euros. Don't change anything yet." This holds even when the statement contains a verb such as total, list, read or change. |
+| D-18 | CSV comparisons: blank, `N/A` and other text cells never satisfy a numeric or date comparison. Dates in common formats (ISO, `M/D/YYYY`, `March 1, 2026`) are compared as dates. Row IDs match exactly first, so `007` never also selects `7`. |
+| D-19 | A run that ends in an error restores any file it deleted, so the workspace is never left half-changed. |
+| D-20 | Long files are read in parts (`read_file` with `offset`). An answer saying something is "not in the file" is pushed back while part of the file is still unread. |
+| D-21 | Summaries: a word count that describes the sources ("the notes are each under 40 words") is not a limit on the output, and "50 to 80 words" allows up to 80. "One bullet per source file" means one bullet for each named source. When the prompt asks for a total, a sum of source numbers counts as supported. |
+| D-22 | CP3: report keys ending in `_code` take the logged value's own type unless they are status or exit codes; `*_cents` keys are integers. A root-cause value is checked against the innermost `Caused by:` and lock-holder classes of the stack traces linked to the request. Before accepting `finish` with time to spare, the programming loop has the model test each numbered requirement itself. |
+| D-23 | Read answers: an answer is pushed back once when it states a multi-digit number that appears nowhere it could have come from. Those sources are the files read, the question, the conversation and tool results such as `calculate`. This catches totals added in the model's head (12 + 3 damaged = 15). Single digits are exempt, and after one pushback the answer is accepted. |
+| D-24 | A verb used as a noun at the start of a statement ("Read receipts are on", "List prices went up", "Check-in time is 3 PM") is not a command. A first-person statement may name a file ("I store my recipes in recipes.txt") and is still only acknowledged. "X needs to be deleted" counts as a request. |
+| D-25 | Per-item word limits are recognised in every word order ("each bullet under 25 words", "15 words each", "3 sentences, each under 20 words") and are checked per line or per sentence. "Between N and M words" is a range, and its minimum is enforced. |
+| D-26 | Older session turns without file actions keep up to 600 characters instead of 200, within a 12,000-character budget, so facts stated early are not cut off. |
+| D-27 | `csv_delete_rows` takes `values` (any of several) and `and_column/and_operator/and_value` (both conditions). A literal "x or y" that matches nothing is split into separate values. Slash dates follow the column's own day/month order. Removing no rows or every row adds a warning to the result. |
+| D-28 | CP3: the root-cause check blames the most recent linked stack trace: the lock holder, or the first non-JDK/framework frame under the innermost cause. `*_number` keys keep the logged value's type, and an integer that the logs only show inside an identifier is flagged. An identical tool call is refused from the 4th repeat on, a repeated `grep` shows more matches, and a report with no findings ends with status error. The self-review shows the task commands' current outputs. |
 
 ## Tests
-There are two kinds of tests:
-- **Offline tests** need no API key and no internet. The unit tests call the agent's modules directly. The end-to-end tests run the real `run_agent.sh` against a small mock model server on `127.0.0.1` that replays scripted tool calls, so harness behaviour (guards, sandbox, verification, sessions, CSV engine, error handling) is tested exactly and repeatably.
-- **Live tests** run the real `run_agent.sh` against the real Qwen3-14B endpoint, to check that the actual model understands the requests.
 
-Every end-to-end test (offline and live) runs the agent exactly as the grader does: `cd` into a fresh temporary task folder, then `bash run_agent.sh "$PROMPT"` for Checkpoint 1 or `bash run_agent.sh "$PROMPT" "$SESSION_ID"` for Checkpoint 2. Each turn of a conversation is a separate process. The tests check:
-- the exit code and that stdout is exactly one JSON object with string `status` and `message`;
-- the actual files on disk, not the agent's message: expected contents byte-for-byte;
-- SHA-256 checksums before and after, proving unrelated and source files are unchanged.
-
-### What you need
-- Python 3.8+ and Bash, as for the agent. Nothing to install.
-- For the live tests only: your key, either in `$QWEN_API_KEY` or in `~/.qwen_key`:
-
-```
-printf '%s' 'YOUR_KEY_HERE' > ~/.qwen_key && chmod 600 ~/.qwen_key
-```
-
-All test commands are run from the submission folder:
-
-```
-cd "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1"
-```
-
-### Run every offline test (no key needed, about 1-2 minutes)
-
-```
-bash tests/run_offline.sh
-```
-
-It runs the six offline suites in turn, prints only failures and the per-suite totals, and ends with `ALL OFFLINE SUITES PASSED` (exit code 0) or `SOME OFFLINE TESTS FAILED` (exit code 1).
-
-### Run one offline suite
-
-| Command | Checkpoint | Count | What it covers |
+| Command | Needs a key | What it runs | Duration |
 |---|---|---|---|
-| `python3 tests/test_sandbox.py` | 1 | 53 unit tests | Path validation, symlink/hard-link/FIFO handling, encodings, tool schemas and aliases, guards (name checks, literal-content restore, word/char limits, salvaging cut-off replies), lenient JSON parsing that never executes code, LLM helpers |
-| `python3 tests/test_verify.py` | 1+2 | 24 unit tests | Independent verification: dishonest tools (a write that doesn't write, a delete that deletes the wrong file, hidden side effects) must never produce `success` |
-| `python3 tests/test_csv.py` | 2 | 61 unit tests | CSV engine (exact decimals, currency/thousands/percent, delimiters, quoting, CRLF, BOM, extra fields, duplicate headers), CSV and copy tools, session store (separation, expiry, corruption, fallback), argument parsing |
-| `python3 tests/test_offline.py` | 1 | 56 end-to-end | The four Checkpoint 1 tasks, the stdout contract, security (traversal, absolute paths, symlink escapes), malformed replies, API failures, unattended and read-only running |
-| `python3 tests/test_edge_cases.py` | 1 | 107 end-to-end | Edge cases, listed below |
-| `python3 tests/test_sessions.py` | 2 | 62 end-to-end | Multi-turn sessions and CSV tasks, listed below |
+| `bash tests/run_offline.sh` | no | static checks, unit tests, mock-LLM E2E (CP1/CP2 + CP3 twins + contract + fault injection), all in parallel | about 75 s |
+| `bash tests/grader_sim.sh` | no | builds the zip, checks its contents, extracts it read-only into a path with spaces and runs the offline suite with `/bin/bash` and a sanitized env | about 2 min |
+| `bash tests/grader_sim.sh --live` | yes | the same plus the CP2 example and one create case with the exact grader command form | +1 min |
+| `python3 tests/test_live.py [cp1\|cp2\|fragment]` | yes | 91 CP1/CP2 live cases (66 single requests, 25 conversations) | about 8 min |
+| `python3 tests/live_cp3.py debug --seeds 1,2 --scenarios basic,retry,decoy_ids,decoy_class` | yes | CP3 debugging generator runs, per-key accuracy | about 1 min per case |
+| `python3 tests/live_cp3.py prog --variants A,B,C --seeds 1` | yes | CP3 programming spec variants, graded per requirement | 1–4 min per case |
+| `bash tests/run_live.sh --reps 5 --only cp1,cp2,cp3` | yes | the release-gate catalog with repetitions (`--backend openrouter\|local`, `--delay S`) | long |
+| `bash tests/story_all.sh` | yes | one connected story through CP1, CP2 (context and isolation) and CP3 in a single session, PASS/FAIL per step | 5-7 min |
+| `python3 tests/smoke_all.py [--no-cp3]` | yes | one prompt per main objective of CP1, CP2 and CP3, with PASS/FAIL per step (see "Trying it by hand") | about 5 min |
+| `python3 tests/adversarial/runner.py --submission . --label NAME [--only cp2,CX-12]` | yes | adversarial grader-style suite: 155 cases (65 CP1, 76 CP2 conversations, 14 CP3 runs), including the four failed hidden CP2 cases, independent CP3 log/spec generators, and reruns of failures; `make_report.py` writes `tests/adversarial/REPORT.md` | about 70 min |
+| `AGENT_UNDER_TEST=$PWD/run_agent.sh python3 tests/heldout.py --reps 3` | yes | 33 held-out conversations, written after development and never tuned on: statement-shaped facts and requests, CSV, CP1 corner cases | about 25 min |
 
-To run only some end-to-end cases, pass part of their names:
+The live tests read the key from `$QWEN_API_KEY` or `~/.qwen_key`. The key is never stored in the repository,
+and a static test scans for it.
 
-```
-python3 tests/test_edge_cases.py delete_
-```
+Fixtures and expected results:
 
-```
-python3 tests/test_sessions.py csv_
-```
+- `tests/fixtures/gen_transactions.py`: seeded 40k-row CSV with anomalies.
+- `tests/fixtures/gen_logs.py`: four services with decoys, plus an answer key.
+- `tests/fixtures/prog_variants.py`: the official tally.py prompt with three invented sets of requirements
+  7–12, and their graders.
+- `tests/fixtures/reference/tally_ref.py`: test-only reference implementation.
+- The CP1/CP2 cases are defined inline in the test files.
 
-### Run the live tests (needs the key and the endpoint)
-`tests/test_live.py` has two clearly separated parts. Each prints its own header and tally, followed by an overall total.
+## Dev backends
 
-| Command | What runs | Typical time |
-|---|---|---|
-| `python3 tests/test_live.py` | Both checkpoints | about 6-8 minutes |
-| `python3 tests/test_live.py cp1` | Checkpoint 1: 66 single-request cases | about 4 minutes |
-| `python3 tests/test_live.py cp2` | Checkpoint 2: 25 multi-turn conversations (58 turns) | about 3 minutes |
-| `python3 tests/test_live.py edge_` | Cases whose name contains `edge_` | |
-| `python3 tests/test_live.py cp2 update` | Checkpoint 2 conversations whose name contains `update` | |
+- **OpenRouter**: `bash tests/run_live.sh --backend openrouter` (uses `$OPENROUTER_API_KEY` and model
+  `qwen/qwen3-14b`).
+- **Local Ollama/vLLM**: `OPENAI_BASE_URL=http://localhost:11434/v1 MODEL=qwen3:14b` (an empty key is fine on
+  localhost). Add `AGENT_NO_THINK_SUFFIX=1` if the backend ignores `chat_template_kwargs`.
 
-Before a live run, this quick check confirms the endpoint is up. `200` means up; `502`, `520`-`524` or `530` mean the server is down.
+## Test results
 
-```
-curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $(cat ~/.qwen_key)" https://llm.montii.me/v1/models
-```
+Measured on 2026-10-17 on the final code, with the course endpoint (`Qwen/Qwen3-14B`) on macOS. Every live
+run uses a fresh workspace and a fresh session store per case.
 
-### Reading the results
-- `PASS name` means the case passed. For live cases, the line above it shows each turn's time and the agent's message.
-- `FAIL name -- reason` means the agent got it wrong. The reason says what was expected; live failures also include the agent's step-by-step log, showing what the model tried and what came back.
-- `INFRA name -- ...` (live only) means the endpoint failed (down, timeout, rejected key), not the agent. Re-run when the endpoint is healthy.
-- Each suite ends with a total such as `91 cases: PASS=91`. The exit code is 0 only if everything passed.
+| Suite | Result |
+|---|---|
+| Offline (`bash tests/run_offline.sh`: static, unit, mock end-to-end, fault injection) | **503/503** |
+| Project live suite (`tests/test_live.py`, CP1 + CP2) | **99/99** |
+| Held-out set (`tests/heldout.py --reps 3`, 33 conversations written after development) | **33/33**; a conversation counts only if all 3 reps pass |
+| Adversarial suite, CP1 + CP2 (`tests/adversarial`, 141 cases, failures rerun twice) | **141/141** on the first run, no flaky cases |
+| The four failed hidden CP2 cases from the hw1-2 report (GR-01 to GR-04) | **4/4** |
+| CP3 debugging: audit generator seeds 21 and 22, every scenario (`tests/live_cp3.py debug`) | **12/12** and **12/12** |
+| CP3 debugging: independent generator (DB-1 to DB-4, DB-B02, unseen seeds 31 and 32) | **12/12** on each |
+| CP3 debugging: hard variants DB-B01 (non-lock cause) and DB-B03 (retried upstream call) | 11/12 and 10/12 |
+| CP3 programming: official `tally.py` prompt (PG-O), 5 runs | **6/6 on all 5**, 138-220 s |
+| CP3 programming: `wordstat.py` practice task (PG-W), 5 runs | 4/4 on 3 runs, 3/4 on 2 (`find WORD --file PATH`), 164-242 s |
+| CP3 programming: invented hidden-requirement variants D / E / F | 10/12, 1/12, 9/12 (model-capability limits, see below) |
 
-### Edge cases covered
-**Checkpoint 1** (`tests/test_edge_cases.py`, and the `edge_` cases in the Checkpoint 1 part of `tests/test_live.py`):
-- **Paths:** spaces, Unicode (NFC/NFD), right-to-left text, dotfiles, `~name`, names that look like shell flags (`-rf`) or contain shell metacharacters, deep nesting, a workspace path with spaces.
-- **Hostile input:** shell metacharacters in content (never executed), content that looks like a tool call, prompt injection inside files, code inside a model reply (parsed as data, never run), `../` and absolute paths, symlink and hard-link escapes.
-- **Odd workspaces:** symlink loops, unreadable directories, 3,000-file workspaces, FIFOs, read-only files and directories, binary, UTF-16, Latin-1 and empty files, 200 KB files.
-- **Content fidelity:** CRLF and tabs, requested trailing newlines, leading spaces inside quotes, Windows backslash paths, curly quotes, Markdown code fences, 50 KB prompts, long repetitive content (the model is rescued when it loops).
-- **Model slip-ups:** wrong directory, a same-named file elsewhere, a name without its extension, extra deletes, repeated failing calls, trailing commas, Python-style quotes, prose around the JSON, two calls in one reply, cut-off replies, runaway generations that time out, null or boolean arguments.
-- **Infrastructure:** hung model (time budget), 429 with Retry-After, 401, Cloudflare 403 and 530, empty `choices`, a rejected `chat_template_kwargs`, base-URL variants, invalid UTF-8 in arguments.
+Full per-case details, including reproduction commands and root-cause notes for every failure found during
+development, are in `tests/adversarial/REPORT.md`. The case catalog is in `tests/adversarial/CASES.md`.
 
-**Checkpoint 2** (`tests/test_sessions.py`, `tests/test_csv.py`, and the `cp2_` conversations in `tests/test_live.py`):
-- **Sessions:** the assignment's three-turn example, interleaved sessions, the same ID in another workspace, `0` vs `00`, calls without an ID, remembered failed turns, the 30-turn history window, a corrupt or unwritable session store, files edited between turns.
-- **Follow-ups:** "What is the average?", "do the same for ID 107", "delete that copy", "save that total to a file", "in the copy, change...", answering from memory, refusing to invent new file names.
-- **CSV:**
-  - tasks: totals, averages, min/max with the matching row, filtered totals, row sums by ID or by name, updates by ID (save-as or in place), row removal by text or number;
-  - file variations: byte-identical copies, BOM files, semicolon and tab delimiters, currency values, leading-zero IDs, case-insensitive column names;
-  - refusals: wrong column names (self-corrected), missing IDs, binary, empty or header-only files, questions that must not modify the file, outputs outside the workspace or onto unrelated files.
-
-### Test-only settings
-These environment variables exist only so the tests can run quickly and in isolation. The grader never needs them.
-- `AGENT_TIME_BUDGET` (seconds) can only *lower* the 170 s total budget, to test timeout handling quickly.
-- `AGENT_CALL_TIMEOUT` (seconds) can only *lower* the per-request cap, to test recovery from a hung model.
-- `AGENT_SESSION_DIR` points the session store at a temporary folder. The test helpers set it automatically, so test runs never touch the real store.
-
-### Checking a single run by hand
-`tests/check_run.py` runs the agent once from your current folder. It prints the agent's JSON and exit code, then what actually changed on disk (created, deleted or modified files, with a content preview):
+### `bash tests/story_all.sh` (one story through all three checkpoints)
 
 ```
-cd ~/agent_playground && python3 "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1/tests/check_run.py" "Delete notes/hello.txt."
+== CP2 context: a fact stated in a statement-only first turn
+   PASS statement turn is acknowledged
+== CP1 create (uses the earlier fact)
+   PASS memo.txt names the team lead
+== CP1 read and answer
+   PASS answer is 12 and the file is unchanged
+== CP1 multi-file summary
+   PASS summary exists, under 50 words, names the cause
+== CP1 delete
+   PASS old.txt gone, other files kept
+== CP2 CSV with follow-ups that rely on earlier turns
+   PASS total is 300
+   PASS follow-up average is 150
+   PASS copy equals sales.csv
+   PASS active.csv keeps rows 1 and 3, orders.csv unchanged
+== CP2 session isolation
+   PASS session 78 does not know the team lead
+   PASS session 77 still remembers
+== CP3 programming: the official tally.py task (requirements 1-6 graded)
+   tally.py requirements passed: 6/6
+   PASS tally.py passes requirements 1-6
+== CP3 debugging: trace one failed request across four logs into REPORT.json
+   REPORT.json keys correct: 12/12
+   PASS at least 11 of 12 keys correct
+13 passed, 0 failed
 ```
 
-For Checkpoint 2, add the session ID as a second argument:
+### `python3 tests/smoke_all.py` (one step per objective)
 
 ```
-python3 "/Users/aryan/Documents/Grad Files/Agentic_AI/Homework_1/tests/check_run.py" "What is the average?" "1001"
+PASS  CP1  create a file                      exit=0   4.7s  Created notes/todo.txt with the content 'buy milk'.
+PASS  CP1  delete a file                      exit=0   3.7s  Deleted old.txt.
+PASS  CP1  read and answer                    exit=0   5.2s  There are 12 blue notebooks currently in stock.
+PASS  CP1  multi-file summary                 exit=0   8.8s  Created reports/summary.txt with a summary under 50 words.
+PASS  CP2  statement turn (memory)            exit=0   2.3s  Noted: your project code name is Cedar.
+PASS  CP2  recall in same session             exit=0   2.1s  Your project code name is Cedar.
+PASS  CP2  isolation (other session)          exit=0   3.4s  The question cannot be answered as there is no information about your project code name in
+PASS  CP2  CSV total                          exit=0   5.3s  The total of the revenue column in sales.csv is 300.
+PASS  CP2  follow-up uses context             exit=0   4.5s  The average of the revenue column in sales.csv is 150.
+PASS  CP2  CSV copy from context              exit=0   4.4s  Saved a copy of the table as reports/sales_copy.csv.
+PASS  CP2  CSV remove rows                    exit=0   6.0s  Removed rows with status 'cancelled' from orders.csv and saved the result as active.csv.
+        tally.py requirements passed: 6/6
+PASS  CP3  programming (tally.py)             exit=0 211.6s  ...
+        REPORT.json keys correct: 12/12
+PASS  CP3  debugging (REPORT.json)            exit=0  57.9s  ...
+
+13/13 steps passed in 320s
 ```
 
-## Assumptions
-- Created files contain exactly the requested text, with no trailing newline added.
-- Creating a file that already exists overwrites it. The write is atomic (a temporary file, then a rename), so a hard-linked file outside the workspace is never modified. Read-only files are refused.
-- Delete removes exactly one regular file (or a symlink itself, never its target). Directories, FIFOs, wildcards and "delete all ..." requests are refused with an error. A name given without its extension ("Delete the README") is accepted only if exactly one file matches.
-- Deleting is refused once any file has been read in the same task. File contents are treated as data, so an instruction inside a file can't trigger a delete.
-- If a requested file is missing, the agent returns an error. The one exception is a read or summary where exactly one file in the workspace has the requested file name; that file is used. Deletes never fall back.
-- Answers come from the file content only. The answer text goes in `message`. If the file exists but doesn't contain the answer, the result is success with a message saying so.
-- Text files are read as UTF-8 (a BOM is stripped) or as UTF-16 when a BOM is present. Binary files are refused.
-- Total runtime is capped internally at about 170 s, with per-request HTTP timeouts.
-- The session ID is the second argument and must be numeric. Any other argument shape is treated as a prompt only, with no session.
-- Session history lives outside the workspace (see "Checkpoint 2: multi-turn sessions"). It assumes that the calls of one conversation run on the same machine and in the same task directory.
-- CSV files have a header row. Averages are taken over the numeric, non-empty cells of the column.
-- A non-integer result is reported exactly (up to 10 decimals) together with its 2-decimal rounding, for example `5.9375 (rounded to 2 decimals: 5.94)`.
+## Known limitations
+
+- **Model limits on CP3 programming.** Qwen3-14B without thinking sometimes leaves a requirement unimplemented
+  or misreads one, and its own tests rarely cover the edge cases a requirement names. The harness's checks,
+  self-review, best-version restore and broken-edit restore recover most cases. Still observed:
+  - `count --invalid` (variant D);
+  - `$`/`+` amounts and date filters (variant E);
+  - `monthly --json` (variant F);
+  - `find WORD --file PATH` in 2 of 5 `wordstat` runs.
+- **CP3 programming time.** Runs take 140-240 s of the 300 s limit (`tally` 138-220 s, `wordstat` 164-242 s).
+  The internal deadline (285 s) and wrap-up keep every run inside the limit, but there is little spare time
+  on a slow endpoint.
+- **Hidden debugging keys.** These are inferred from the task wording; a key whose type is ambiguous is typed
+  from the model's value.
+- **Untested platforms.** Python 3.8 and Linux containers were not run (not installed on the development
+  machine). The unit suites pass on Python 3.9.6, the grader simulation runs the agent under 3.9.6, and a static
+  test parses every module with the Python 3.8 grammar.
+- **Shared endpoint.** Busy/rate-limited responses (429/503, proxy HTML 400s) are retried with backoff for up
+  to ~60 s inside the deadline; longer outages fail the run.
+- **Throughput.** At about 25 tokens/s, a CP3 program write takes 60–90 s. The 300 s limit leaves room for
+  roughly two full rewrites plus edits.

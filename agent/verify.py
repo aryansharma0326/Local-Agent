@@ -92,23 +92,30 @@ def check_delete(full, rel):
 
 
 def check_workspace(root, before, complete, changed_rel=None, expect=None):
-    """Compare the workspace with the starting snapshot. Only `changed_rel`
-    may differ: it must be present afterwards (expect="present", a write) or
-    absent (expect="absent", a delete). A written file's newly created parent
+    """Compare the workspace with the starting snapshot. Only the changed
+    paths may differ: each must be present afterwards ("present", a write) or
+    absent ("absent", a delete). `changed_rel` is one path (with `expect`) or a
+    dict {path: "present"|"absent"}. A written file's newly created parent
     directories are allowed. Returns a list of problems (empty = verified)."""
     after, _ = snapshot(root)
-    target = _nfc(changed_rel) if changed_rel else None
+    if isinstance(changed_rel, dict):
+        changes = dict((_nfc(k), v) for k, v in changed_rel.items())
+    elif changed_rel:
+        changes = {_nfc(changed_rel): expect}
+    else:
+        changes = {}
     allowed_new = set()
-    if target and expect == "present":
-        parts = target.split("/")
-        allowed_new = set("/".join(parts[:i]) for i in range(1, len(parts)))
-        if target not in after:
-            return ["%s is missing from the workspace" % target]
-    if target and expect == "absent" and target in after:
-        return ["%s is still present in the workspace" % target]
+    for target, how in changes.items():
+        if how == "present":
+            parts = target.split("/")
+            allowed_new.update("/".join(parts[:i]) for i in range(1, len(parts)))
+            if target not in after:
+                return ["%s is missing from the workspace" % target]
+        if how == "absent" and target in after:
+            return ["%s is still present in the workspace" % target]
     problems = []
     for rel, fp in before.items():
-        if rel == target:
+        if rel in changes:
             continue
         if rel not in after:
             problems.append("%s was removed" % rel)
@@ -116,6 +123,6 @@ def check_workspace(root, before, complete, changed_rel=None, expect=None):
             problems.append("%s was modified" % rel)
     if complete:
         for rel in after:
-            if rel not in before and rel != target and rel not in allowed_new:
+            if rel not in before and rel not in changes and rel not in allowed_new:
                 problems.append("%s was created unexpectedly" % rel)
     return problems
