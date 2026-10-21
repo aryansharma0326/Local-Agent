@@ -2,7 +2,7 @@
 
 Audit date: 2026-10-14. Branch: `claude/agentic-ai-homework-audit-86a82b` (base `7245cb5`, the Checkpoint 1/2 submission).
 
-Sources of truth: `docs/assignment/CP1.md`, `CP2.md`, `CP3.md`. Engineering spec: `docs/CLAUDE_CODE_PROMPT.md` and `docs/TEST_PLAN.md`.
+Sources of truth: the CP1, CP2 and CP3 assignment texts and the engineering spec, kept out of the submission.
 Where the spec and the assignment disagree, the assignment wins (see "Conflicts" at the end).
 
 ## 1. Inventory (before changes)

@@ -2,7 +2,7 @@
 # Build dist/hw1_submission.zip from an explicit include list, after the
 # pre-package checks (PKG-2): LF-only *.sh/*.py, run_agent.sh executable,
 # bash -n, every agent module compiles (without writing bytecode), secrets scan.
-# Excluded: .git, __pycache__, .agent_state, .env*, venvs, dist/, tests/reports/.
+# Excluded: .git, __pycache__, .agent_state, .env*, venvs, dist/, tests/reports/, docs/.
 # Bash 3.2 compatible.
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -49,7 +49,7 @@ rm -f dist/hw1_submission.zip
 python3 -B - <<'EOF' || fail "zip failed"
 import os, stat, zipfile
 INCLUDE = ["run_agent.sh", "readme.md", "requirements.txt", "AUDIT.md", "PLAN.md", ".gitignore",
-           "agent", "tests", "scripts", "docs"]
+           "agent", "tests", "scripts"]
 SKIP_DIRS = {".git", "__pycache__", ".agent_state", ".agent_sessions", "dist", "reports", "venv", ".venv", "env"}
 def skip_file(name):
     return name.endswith(".pyc") or name == ".DS_Store" or name.startswith(".env")
