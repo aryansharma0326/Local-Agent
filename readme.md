@@ -48,7 +48,6 @@ tests/                  offline + live test suites, fixtures and generators (see
   adversarial/          grader-style adversarial suite: cases_cp1/2/3.py, runner.py, make_report.py,
                         cp3/ generators and reference tally, CASES.md (catalog), REPORT.md (results)
 scripts/make_submission.sh  builds dist/hw1_submission.zip after pre-package checks
-docs/                   the assignment texts (docs/assignment/CP1-3.md) and the engineering spec
 AUDIT.md, PLAN.md       requirement traceability matrix and plan
 ```
 
