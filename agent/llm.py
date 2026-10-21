@@ -269,6 +269,8 @@ class LLM:
         body = {"model": self.model, "messages": msgs, "temperature": temp, "top_p": 0.8,
                 "max_tokens": mt, "stream": False,
                 "chat_template_kwargs": {"enable_thinking": False}}
+        if config.REASONING_NONE:
+            body["reasoning_effort"] = "none"
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"

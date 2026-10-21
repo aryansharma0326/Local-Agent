@@ -193,6 +193,13 @@ class Deletes(unittest.TestCase):
         self.assertEqual((removed, kept), (2, 2))
         self.assertEqual(new, "order_id,item,status,amount\n1,pen,shipped,3.50\n4,cap,open,1\n")
 
+    def test_value_and_values_both_used(self):  # held-out csv_or_condition (Kaggle vLLM run)
+        t = "order_id,status\n1,shipped\n2,cancelled\n3,returned\n4,pending\n"
+        new, removed, kept, _ = csvtools.delete_rows(Table(t), "status", "contains", "cancelled", ["returned"])
+        self.assertEqual((removed, kept), (2, 2))
+        self.assertEqual(new, "order_id,status\n1,shipped\n4,pending\n")
+        self.assertEqual(csvtools.delete_rows(Table(t), "status", "equals", "", ["cancelled", "Cancelled"])[1], 1)
+
     def test_operators(self):
         t = lambda: Table(ORDERS)
         self.assertEqual(csvtools.delete_rows(t(), "amount", "greater_than", 5)[1], 2)

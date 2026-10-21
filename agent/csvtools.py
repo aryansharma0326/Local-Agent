@@ -368,7 +368,10 @@ def delete_rows(table, column, operator, value, values=None, and_column=None, an
     that must ALSO hold (e.g. qty == 0 AND status == pending)."""
     idx = table.column(column)
     op = normalize_operator(operator)
-    wanted = [v for v in (values or []) if str(v).strip()] or [value]
+    # The model sometimes passes one value in `value` and the others in `values`: use both.
+    wanted = [v for v in [value] + list(values or []) if v is not None and str(v).strip()]
+    wanted = [v for i, v in enumerate(wanted) if str(v).strip().lower() not in
+              [str(w).strip().lower() for w in wanted[:i]]] or [value]
     hits = set()
     for v in wanted:
         hits |= set(ri for ri, _ in table.matching(idx, op, v))

@@ -237,6 +237,10 @@ class Harness:
         # Qwen3-14B on the shared endpoint decodes ~25 tokens/s: keep every call short enough
         # that a runaway (looping) generation ends well inside the time budget.
         need = 1200 + len(self.prompt) // 3 + self.read_chars // 3
+        if self.timeouts:
+            # After a timed-out (looping) reply, a short cap makes the retry end in time; a cut-off
+            # write of literal content is then completed from the request (salvage_truncated_write).
+            need = min(need, 400)
         return self.llm.chat(messages, max_tokens=min(MAX_REPLY_TOKENS, need), thinking=False, call_cap=75)
 
     # ------------------------------------------------------------ main loop
@@ -763,8 +767,14 @@ class Harness:
             bad = guards.unsupported_numbers(content, "\n".join(src), self.prompt)
             if bad:
                 self.write_rejections += 1
+                hint = ""
+                span = guards.clock_span("\n".join(src)) if guards._DURATION_ASK.search(self.prompt) else None
+                if span:
+                    hint = (" A duration must be the difference between two times in the sources (the earliest "
+                            "time is %s and the latest is %s, %d minutes apart)." % span)
                 return ("these numbers/times/dates in the summary do not appear in the source files: %s. Use only "
-                        "facts from the sources (copy numbers exactly), then call write_file again" % ", ".join(bad[:8]))
+                        "facts from the sources (copy numbers exactly), then call write_file again.%s"
+                        % (", ".join(bad[:8]), hint))
         return None
 
     def _exact_source_text(self, content):

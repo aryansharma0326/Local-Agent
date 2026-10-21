@@ -58,7 +58,7 @@ def attempt_conversation(case, sub, env, keep):
     guard = unchanged_except(case["changes"])
     turns, ok_all, infra = [], True, False
     for t in case["turns"]:
-        res = run_agent(sub, ws, t["prompt"], t["sid"], env, state, 180)
+        res = run_agent(sub, ws, t["prompt"], t["sid"], env, state, int(os.environ.get("ADV_CP12_LIMIT", "180")))
         if is_infra(res):
             infra = True
         ctx = Ctx(ws, res, before)
@@ -94,7 +94,7 @@ def attempt_cp3(case, sub, env, keep, fixtures):
     state = tempfile.mkdtemp(prefix="adv_state_")
     prompt, key = cases_cp3.setup(case, ws, fixtures)
     before = snapshot(ws)
-    res = run_agent(sub, ws, prompt, case["session"], env, state, 300)
+    res = run_agent(sub, ws, prompt, case["session"], env, state, int(os.environ.get("ADV_CP3_LIMIT", "300")))
     pts, mx, rows = cases_cp3.grade(case, ws, key)
     after = snapshot(ws)
     extra = sorted(p for p in after if p not in before and p not in ("tally.py", "REPORT.json"))

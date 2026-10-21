@@ -208,6 +208,8 @@ To see what the agent did, add `2> agent.log` to any call and read the log.
 | `AGENT_SESSION_SCOPE` | no | `id+workspace` (default) or `id` (see "Sessions") |
 | `AGENT_LOG_FILE` | no | also append the stderr log to this file (keep it outside the workspace) |
 | `AGENT_TEMPERATURE` | no | sampling temperature (default 0.2; the CP1/CP2 loop uses 0.0) |
+| `AGENT_CONTEXT_TOKENS` | no | the model's context window in tokens (default 40960, the course endpoint's); lower it for a smaller local window |
+| `AGENT_REASONING_NONE` | no | `1` also sends `reasoning_effort: "none"`. Ollama needs this: it ignores `chat_template_kwargs` and `/no_think`, so without it thinking stays on (off for grading) |
 | `AGENT_NO_THINK_SUFFIX` | no | `1` also appends `/no_think` for backends that ignore `chat_template_kwargs` (off for grading) |
 | `AGENT_DEBUG_DUMP` | no | development only: write the latest CP3 request to this file |
 
@@ -328,6 +330,7 @@ Every request sends `"chat_template_kwargs": {"enable_thinking": false}`. Thinki
 | `python3 tests/smoke_all.py [--no-cp3]` | yes | one prompt per main objective of CP1, CP2 and CP3, with PASS/FAIL per step (see "Trying it by hand") | about 5 min |
 | `python3 tests/adversarial/runner.py --submission . --label NAME [--only cp2,CX-12]` | yes | adversarial grader-style suite: 155 cases (65 CP1, 76 CP2 conversations, 14 CP3 runs), including the four failed hidden CP2 cases, independent CP3 log/spec generators, and reruns of failures; `make_report.py` writes `tests/adversarial/REPORT.md` | about 70 min |
 | `AGENT_UNDER_TEST=$PWD/run_agent.sh python3 tests/heldout.py --reps 3` | yes | 33 held-out conversations, written after development and never tuned on: statement-shaped facts and requests, CSV, CP1 corner cases | about 25 min |
+| `bash tests/kaggle_eval.sh [quick\|full]` | no | on a Kaggle T4 x2 notebook: installs vLLM, serves `Qwen/Qwen3-14B-AWQ` locally, checks that thinking is off, then runs story_all, the held-out set and test_live (`full` adds the adversarial CP1/CP2 cases and four CP3 runs); results in `/kaggle/working/eval_results.tgz` | quick about 40 min, full about 70 min |
 
 The live tests read the key from `$QWEN_API_KEY` or `~/.qwen_key`. The key is never stored in the repository,
 and a static test scans for it.
@@ -347,6 +350,8 @@ Fixtures and expected results:
   `qwen/qwen3-14b`).
 - **Local Ollama/vLLM**: `OPENAI_BASE_URL=http://localhost:11434/v1 MODEL=qwen3:14b` (an empty key is fine on
   localhost). Add `AGENT_NO_THINK_SUFFIX=1` if the backend ignores `chat_template_kwargs`.
+- **Kaggle (self-hosted vLLM, free T4 x2)**: `bash tests/kaggle_eval.sh full`; see "Self-hosted Qwen3-14B on
+  Kaggle" under Test results.
 
 ## Test results
 
@@ -355,7 +360,7 @@ run uses a fresh workspace and a fresh session store per case.
 
 | Suite | Result |
 |---|---|
-| Offline (`bash tests/run_offline.sh`: static, unit, mock end-to-end, fault injection) | **503/503** |
+| Offline (`bash tests/run_offline.sh`: static, unit, mock end-to-end, fault injection) | **505/505** |
 | Grader simulation (`bash tests/grader_sim.sh`: the zip is built, unpacked read-only into a path with spaces, and the offline suite is run under `/bin/bash` 3.2 with a sanitized env) | **pass**, exit 0 |
 | Project live suite (`tests/test_live.py`, CP1 + CP2) | **99/99** |
 | Held-out set (`tests/heldout.py --reps 3`, 33 conversations written after development) | **33/33**; a conversation counts only if all 3 reps pass |
@@ -370,6 +375,40 @@ run uses a fresh workspace and a fresh session store per case.
 
 Full per-case details, including reproduction commands and root-cause notes for every failure found during
 development, are in `tests/adversarial/REPORT.md`. The case catalog is in `tests/adversarial/CASES.md`.
+
+### Self-hosted Qwen3-14B on Kaggle (vLLM)
+
+To test against a model other than the course endpoint, the agent was also run against its own vLLM server on
+a Kaggle notebook (2x Tesla T4, driver 580, torch 2.13 + CUDA 13.0, vLLM 0.32.0), serving
+`Qwen/Qwen3-14B-AWQ` (4-bit AWQ, 40960-token context) under the name `Qwen/Qwen3-14B`, with
+`bash tests/kaggle_eval.sh full`. The thinking check sends the grader's request
+(`chat_template_kwargs: {"enable_thinking": false}`) and got `content='Hello.'` in 3 tokens: thinking is off.
+The T4s generate about 20 tokens/s per request, slower than the course endpoint.
+
+| Suite | Kaggle vLLM (AWQ, T4 x2) | Course endpoint |
+|---|---|---|
+| `story_all.sh` | **13/13** | 13/13 |
+| Held-out set (1 rep) | 32/33 (`csv_or_condition`) | 33/33 x3 |
+| `test_live.py` CP1 + CP2 | 98/99 (1 timeout, `edge_create_long_line`) | 99/99 |
+| Adversarial CP1 + CP2 | 140/141 (`SM-B05`) | 141/141 |
+| CP3 `tally.py` (PG-O) | **6/6** in 196 s | 6/6 on 5 runs |
+| CP3 debugging DB-1 and DB-S31 | **12/12** and **12/12** | 12/12 and 12/12 |
+| CP3 `wordstat.py` (PG-W) | 2/4 | 4/4 on 3 of 5 runs |
+
+The three CP1/CP2 misses were agent bugs that the different model exposed, and are fixed:
+
+- `csv_or_condition`: the model put one value in `value` and the other in `values`, and the CSV delete
+  tool used only `values`. It now removes rows matching either.
+- `SM-B05`: the model miscomputed a duration (71 minutes instead of 63). The number guard rejected it as
+  intended, but the model then dropped the number. Durations between times in the sources now count as
+  supported when the request asks how long something lasted, and the rejection names the earliest and latest
+  times and the minutes between them.
+- `edge_create_long_line`: on the slower GPUs a looping reply hit the 75 s call limit twice. The retry after
+  a timeout is now capped at 400 tokens, so a cut-off write of literal content is completed from the request.
+
+After the fixes, on the course endpoint: offline 505/505, `test_live.py` 99/99, the held-out CSV
+conversations 5/5 x3, and the adversarial summary and CSV cases (SM, CV, CX) 75/75. PG-W stays a
+model-capability miss (see Known limitations).
 
 ### `bash tests/story_all.sh` (one story through all three checkpoints)
 

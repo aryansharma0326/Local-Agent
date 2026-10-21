@@ -41,6 +41,9 @@ def load_env():
 
 
 ENV = None
+# The grader's per-call limit. LIVE_TIME_LIMIT raises it for slow local backends (e.g. Ollama on a laptop),
+# where timing says nothing about the grader but behaviour still does.
+LIMIT = float(os.environ.get("LIVE_TIME_LIMIT", "180"))
 CASES = []
 
 
@@ -59,12 +62,12 @@ def has_all(text, *groups):
 def execute(name, files, prompt, check, expect_status):
     ws = Workspace(files)
     before = ws.snapshot()
-    r = run_agent(ws, prompt, ENV, timeout=200)
+    r = run_agent(ws, prompt, ENV, timeout=LIMIT + 20)
     tag = "[%s] %.1fs" % (name, r.elapsed)
     if r.contract_error is None and r.status == "error" and "language model request failed" in r.message:
         raise InfraError("%s endpoint failure: %s" % (tag, r.message))
     assert_contract(r)
-    expect(r.elapsed < 180, "%s took too long" % tag)
+    expect(r.elapsed < LIMIT, "%s took too long" % tag)
     if expect_status is not None:  # None = either outcome is acceptable
         expect(r.status == expect_status, "%s expected %s, got %s: %s\nstderr: %s"
                % (tag, expect_status, r.status, r.message, r.stderr[-1500:]))
@@ -435,12 +438,12 @@ def execute_conversation(name, files, turns):
     for i, step in enumerate(turns, 1):
         sid, prompt, check = step[:3]
         want = step[3] if len(step) > 3 else "success"  # "success", "error" or "either"
-        r = run_agent(ws, prompt, ENV, timeout=200, extra_args=[str(sid)])
+        r = run_agent(ws, prompt, ENV, timeout=LIMIT + 20, extra_args=[str(sid)])
         tag = "[%s turn %d] %.1fs" % (name, i, r.elapsed)
         if r.contract_error is None and r.status == "error" and "language model request failed" in r.message:
             raise InfraError("%s endpoint failure: %s" % (tag, r.message))
         assert_contract(r)
-        expect(r.elapsed < 180, "%s took too long" % tag)
+        expect(r.elapsed < LIMIT, "%s took too long" % tag)
         if want != "either":
             expect(r.status == want, "%s expected %s, got %s: %s\nstderr: %s"
                    % (tag, want, r.status, r.message, r.stderr[-1500:]))
