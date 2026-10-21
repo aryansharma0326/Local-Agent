@@ -632,6 +632,31 @@ def _derived_values(sources):
     return out
 
 
+_DURATION_ASK = re.compile(r"\b(how long|duration|lasted|elapsed|how many (minutes|hours))\b", re.I)
+_CLOCK = re.compile(r"(?<![\d:])([01]?\d|2[0-3]):([0-5]\d)(?![\d:])")
+
+
+def clock_span(sources):
+    """(earliest, latest, minutes) over the HH:MM times in the sources, or None."""
+    times = sorted(set(int(h) * 60 + int(m) for h, m in _CLOCK.findall(sources or "")))
+    if len(times) < 2:
+        return None
+    fmt = lambda t: "%02d:%02d" % divmod(t, 60)  # noqa: E731
+    return fmt(times[0]), fmt(times[-1]), times[-1] - times[0]
+
+
+def _durations(sources):
+    """Minutes between any two HH:MM times in the sources (and the same in whole hours)."""
+    times = sorted(set(int(h) * 60 + int(m) for h, m in _CLOCK.findall(sources or "")))[:60]
+    out = set()
+    for i, a in enumerate(times):
+        for b in times[i + 1:]:
+            out.add(str(b - a))
+            if (b - a) % 60 == 0:
+                out.add(str((b - a) // 60))
+    return out
+
+
 def answer_unsupported_numbers(message, corpus):
     """Multi-digit numbers an answer states that occur nowhere in `corpus` (the files read,
     the question, the conversation and tool results). Single digits are ignored: small
@@ -650,6 +675,8 @@ def unsupported_numbers(summary, sources, prompt=""):
     have = set()
     if _DERIVED_ASK.search(prompt or ""):
         have |= _derived_values(sources)
+    if _DURATION_ASK.search(prompt or ""):
+        have |= _durations(sources)
     for tok in _NUM_TOKEN.findall(sources or ""):
         have.add(_norm_num(tok))
         for piece in re.split(r"[.:]", tok.replace(",", "")):

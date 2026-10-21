@@ -150,6 +150,15 @@ class SummaryGuards(unittest.TestCase):
         self.assertEqual(guards.unsupported_numbers("45 minutes in total", src, "state the total minutes"), [])
         self.assertEqual(guards.unsupported_numbers("45 minutes", src, "summarize"), ["45"])
 
+    def test_requested_durations_are_supported(self):  # SM-B05 (Kaggle vLLM run)
+        src = "09:02 UTC - alert\n09:44 UTC - cause found\n10:05 UTC - closed\n"
+        ask = "a summary that says how many minutes the incident lasted"
+        self.assertEqual(guards.unsupported_numbers("It lasted 63 minutes (09:02 to 10:05).", src, ask), [])
+        self.assertEqual(guards.unsupported_numbers("It lasted 71 minutes.", src, ask), ["71"])
+        self.assertEqual(guards.unsupported_numbers("It lasted 63 minutes.", src, "summarize"), ["63"])
+        self.assertEqual(guards.clock_span(src), ("09:02", "10:05", 63))
+        self.assertIsNone(guards.clock_span("no times here"))
+
 
 class AnswerNumbers(unittest.TestCase):
     def test_invented_numbers(self):  # RQ-A08

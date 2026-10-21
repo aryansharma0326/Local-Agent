@@ -16,7 +16,8 @@ DEFAULT_BASE_URL = "https://llm.montii.me/v1"
 DEFAULT_MODEL = "Qwen/Qwen3-14B"
 USER_AGENT = "hw1-agent/1.0"
 
-CONTEXT_TOKENS = 40960      # Qwen3-14B on the course endpoint: prompt + output
+CONTEXT_TOKENS = int(os.environ.get("AGENT_CONTEXT_TOKENS") or 40960)  # Qwen3-14B on the course endpoint: prompt + output
+# (AGENT_CONTEXT_TOKENS lowers it for a smaller local window, e.g. an Ollama model created with num_ctx 16384)
 CONTEXT_SAFETY = 512
 
 # Model-call caps: the grader allows 120 successful completions per run.
@@ -70,6 +71,9 @@ MODEL = model()
 API_KEY = api_key()
 TEMPERATURE = _float_env("AGENT_TEMPERATURE")
 NO_THINK_SUFFIX = _env("AGENT_NO_THINK_SUFFIX") == "1"
+# Ollama's OpenAI-compatible API ignores chat_template_kwargs and /no_think; only reasoning_effort="none"
+# turns Qwen3's thinking off there. Opt-in, so the grader's endpoint sees exactly the documented request.
+REASONING_NONE = _env("AGENT_REASONING_NONE") == "1"
 STREAM = _env("AGENT_STREAM") == "1"
 LOG_FILE = _env("AGENT_LOG_FILE")
 SESSION_SCOPE = _env("AGENT_SESSION_SCOPE", "id+workspace").lower()
