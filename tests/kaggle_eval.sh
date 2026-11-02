@@ -80,7 +80,7 @@ if [ "$MODE" = "full" ]; then
     python3 tests/adversarial/runner.py --submission . --label kaggle --only cp1,cp2 --workers 2 --reruns 0 \
         > "$OUT/adversarial.log" 2>&1
     log "adversarial CP1/CP2: $(grep 'done:' "$OUT/adversarial.log")"
-    python3 tests/adversarial/runner.py --submission . --label kaggle-cp3 --only PG-O,PG-W,DB-1,DB-S31 \
+    python3 tests/adversarial/runner.py --submission . --label kaggle-cp3 --only PG-O,PG-R,PG-W,DB-1,DB-S31 \
         --workers 1 > "$OUT/cp3.log" 2>&1
     log "CP3: $(grep -E 'PG-|DB-' "$OUT/cp3.log" | grep -E 'PASS|FAIL' | tr '\n' ';')"
     cp tests/adversarial/results/kaggle*.json "$OUT/" 2>/dev/null

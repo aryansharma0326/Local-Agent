@@ -21,11 +21,12 @@ CHECKLIST FOR COMMAND-LINE PROGRAMS (apply what is relevant)
 - Options may appear anywhere after the command name (`top 3 --json`, `top --file x.csv 3`, `--file=PATH` if allowed). Parse sys.argv yourself (walk the list: an option consumes its value) instead of argparse, so errors and usage never go to stdout by accident.
 - CSV: use the csv module (quoted fields with commas, escaped quotes); open with newline='' and encoding='utf-8-sig' (handles a BOM); skip blank lines and repeated header lines.
 - Validate every row the same way everywhere: wrong field count, impossible dates (check with datetime.date / strptime('%Y-%m-%d')), unparsable amounts -> follow the task's rule for invalid rows (usually: skip them).
-- Money: decimal.Decimal, never float. Round with quantize(Decimal('0.01'), rounding=ROUND_HALF_UP); format with '{{:.2f}}'-style on the Decimal or str(quantized); never print -0.00 (add 0 / normalise zero); no thousands separators.
+- Money: decimal.Decimal, never float. Round with quantize(Decimal('0.01'), rounding=ROUND_HALF_UP); format with '{{:.2f}}'-style on the Decimal or str(quantized); never print -0.00 (add 0 / normalise zero); print no thousands separators.
+- Reading amounts: accept every input format the task describes, including its examples, even if the sample data never shows them. If the task allows `$` or thousands separators, remove exactly those characters before Decimal(); `"1,234.50"` must parse as 1234.50.
 - Case-insensitive comparisons: normalise with .strip().lower() (and print lowercase if the task says so).
 - Sorting with ties exactly as specified (e.g. key=lambda kv: (-amount, name)).
 - Output exactly as specified: no extra spaces, blank lines or debug prints; JSON output via json.dumps with exactly the specified keys and types.
-- Errors (missing file, bad arguments) go to stderr with a non-zero exit code and nothing on stdout, unless the task says otherwise.
+- Errors (missing file, bad arguments) go to stderr with nothing on stdout. Use the exact message and exit status the task names for EACH error: they often differ (e.g. 1 for one error, 2 for another). Do not assume 1.
 - Must run in a few seconds on large files: read the file once, no quadratic loops.
 - Structure: functions + `if __name__ == "__main__": main()`.
 
@@ -74,7 +75,7 @@ def load_rows(path):
     try:
         f = open(path, newline="", encoding="utf-8-sig")
     except OSError:
-        fail("error: file not found: %s" % path, 1)   # use the task's exact message/exit code
+        fail(MISSING_FILE_MESSAGE % path, MISSING_FILE_STATUS)   # define both from the task's text; do not assume a status
     rows = []
     with f:
         reader = csv.reader(f)
@@ -83,7 +84,7 @@ def load_rows(path):
             if not r or all(not c.strip() for c in r): continue          # blank line
             if [c.strip().lower() for c in r] == [h.strip().lower() for h in header]: continue  # repeated header
             if len(r) != len(header): continue                           # wrong field count
-            ...validate each field, convert with Decimal(text.strip()) inside try/except InvalidOperation...
+            ...validate each field; for amounts remove the formatting the task allows, then Decimal(...) inside try/except InvalidOperation...
             rows.append(...)
     return rows
 

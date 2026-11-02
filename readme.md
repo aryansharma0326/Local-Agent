@@ -1,16 +1,48 @@
-# Homework 1 — a from-scratch Qwen3-14B agent (Checkpoints 1, 2 and 3)
+# Qwen Agent Harness
 
-The agent is a small harness written from scratch in Python (standard library only). Qwen3-14B, behind an
-OpenAI-compatible `/chat/completions` endpoint, decides what to do. Deterministic code does every filesystem,
-CSV, shell and validation step. No agent framework or SDK is used, and the configured endpoint is the only
-network call.
+An autonomous agent, built from scratch in Python with no agent framework or SDK, that turns a plain-English
+request into checked work. It edits files, answers questions from documents, remembers multi-turn conversations,
+analyses CSV data, writes programs to a spec, and traces a failed request through large service logs.
 
-It handles:
+An LLM (Qwen3-14B, through any OpenAI-compatible endpoint) chooses each step. Deterministic code carries out and
+checks every step, and the LLM cannot run arbitrary shell commands.
 
-- **CP1**: create, delete, read-and-answer, and multi-file summaries.
-- **CP2**: multi-turn sessions across processes, session isolation, and CSV questions/edits.
-- **CP3**: programming tasks (write or fix a program against a spec) and debugging tasks (follow one failed
-  request through large logs and write a JSON report).
+## Results
+
+| Measure | Result |
+|---|---|
+| Independent autograder, final score | **13/14** |
+| File tasks: create, delete, read and answer, multi-file summaries | 35/35 cases |
+| Multi-turn memory, session isolation and CSV work | 10/10 cases |
+| Debugging: tracing one failed request across service logs | 12/12 report fields |
+| Programming to a written spec | 10/12 requirements (a requirement counted if any of 20 runs passed it) |
+| Adversarial conversations written to break the agent | 141/141 live, on the hosted model and on self-hosted vLLM |
+| Held-out conversations, never used for tuning | 33/33 live |
+| Automated offline tests | 518 passing |
+
+The autograder scores are for the submitted version. In its programming runs, 13 of 20 ended without a compiling
+program. Those failures and both lost requirements have since been fixed and pass the offline tests, but
+they have not yet been rerun against the live model. See "Graded result of the submission".
+
+## What it does
+
+- **Files and documents:** creates and deletes exactly the files requested, answers from file contents, and writes
+  summaries of several sources within word limits, using only numbers found in those sources.
+- **Conversations and data:** keeps separate memory per session across processes, and answers questions about CSV
+  files or edits them through deterministic tools rather than LLM arithmetic.
+- **Programming:** writes or fixes a program, compiles and runs it after every change, compares the results with
+  the spec, and restores the best working version if an edit breaks it.
+- **Debugging:** follows one failed request through large logs, checks each finding against the evidence, and
+  writes a structured JSON report.
+
+Every run stays inside a sandboxed workspace and a fixed time budget, verifies its result on disk, and prints
+exactly one JSON status object. It uses only the Python standard library.
+
+## Background
+
+Built for a graduate Agentic AI course. The coursework's three checkpoints map to the sections above: checkpoint 1
+is files and documents, checkpoint 2 is conversations and data, and checkpoint 3 is programming and debugging. The
+rest of this document uses those names (CP1, CP2, CP3).
 
 ## Folder structure
 
@@ -79,7 +111,7 @@ Stdout is always exactly one JSON object, `{"status": "success"|"error", "messag
 newline. The exit code is 0 if and only if the status is `success`. Diagnostics, including a
 `calls_used=N` line, go to stderr.
 
-## Trying it by hand (for graders)
+## Trying it by hand
 
 ### One story through all three checkpoints
 
@@ -327,7 +359,7 @@ Every request sends `"chat_template_kwargs": {"enable_thinking": false}`. Thinki
 | `bash tests/run_live.sh --reps 5 --only cp1,cp2,cp3` | yes | the release-gate catalog with repetitions (`--backend openrouter\|local`, `--delay S`) | long |
 | `bash tests/story_all.sh` | yes | one connected story through CP1, CP2 (context and isolation) and CP3 in a single session, PASS/FAIL per step | 5-7 min |
 | `python3 tests/smoke_all.py [--no-cp3]` | yes | one prompt per main objective of CP1, CP2 and CP3, with PASS/FAIL per step (see "Trying it by hand") | about 5 min |
-| `python3 tests/adversarial/runner.py --submission . --label NAME [--only cp2,CX-12]` | yes | adversarial grader-style suite: 155 cases (65 CP1, 76 CP2 conversations, 14 CP3 runs), including the four failed hidden CP2 cases, independent CP3 log/spec generators, and reruns of failures; `make_report.py` writes `tests/adversarial/REPORT.md` | about 70 min |
+| `python3 tests/adversarial/runner.py --submission . --label NAME [--only cp2,CX-12]` | yes | adversarial grader-style suite: 156 cases (65 CP1, 76 CP2 conversations, 15 CP3 runs), including the four failed hidden CP2 cases, independent CP3 log/spec generators, and reruns of failures; `make_report.py` writes `tests/adversarial/REPORT.md` | about 70 min |
 | `AGENT_UNDER_TEST=$PWD/run_agent.sh python3 tests/heldout.py --reps 3` | yes | 33 held-out conversations, written after development and never tuned on: statement-shaped facts and requests, CSV, CP1 corner cases | about 25 min |
 | `bash tests/kaggle_eval.sh [quick\|full]` | no | on a Kaggle T4 x2 notebook: installs vLLM, serves `Qwen/Qwen3-14B-AWQ` locally, checks that thinking is off, then runs story_all, the held-out set and test_live (`full` adds the adversarial CP1/CP2 cases and four CP3 runs); results in `/kaggle/working/eval_results.tgz` | quick about 40 min, full about 70 min |
 
@@ -359,7 +391,7 @@ run uses a fresh workspace and a fresh session store per case.
 
 | Suite | Result |
 |---|---|
-| Offline (`bash tests/run_offline.sh`: static, unit, mock end-to-end, fault injection) | **505/505** |
+| Offline (`bash tests/run_offline.sh`: static, unit, mock end-to-end, fault injection), rerun 2026-11-01 | **518/518** |
 | Grader simulation (`bash tests/grader_sim.sh`: the zip is built, unpacked read-only into a path with spaces, and the offline suite is run under `/bin/bash` 3.2 with a sanitized env) | **pass**, exit 0 |
 | Project live suite (`tests/test_live.py`, CP1 + CP2) | **99/99** |
 | Held-out set (`tests/heldout.py --reps 3`, 33 conversations written after development) | **33/33**; a conversation counts only if all 3 reps pass |
@@ -370,7 +402,7 @@ run uses a fresh workspace and a fresh session store per case.
 | CP3 debugging: hard variants DB-B01 (non-lock cause) and DB-B03 (retried upstream call) | 11/12 and 10/12 |
 | CP3 programming: official `tally.py` prompt (PG-O), 5 runs | **6/6 on all 5**, 138-220 s |
 | CP3 programming: `wordstat.py` practice task (PG-W), 5 runs | 4/4 on 3 runs, 3/4 on 2 (`find WORD --file PATH`), 164-242 s |
-| CP3 programming: invented hidden-requirement variants D / E / F | 10/12, 1/12, 9/12 (model-capability limits, see below) |
+| CP3 programming: invented hidden-requirement variants D / E / F | 10/12, 1/12, 9/12 (causes not all established, see below) |
 
 Full per-case details, including reproduction commands and root-cause notes for every failure found during
 development, are in `tests/adversarial/REPORT.md`. The case catalog is in `tests/adversarial/CASES.md`.
@@ -406,8 +438,23 @@ The three CP1/CP2 misses were agent bugs that the different model exposed, and a
   a timeout is now capped at 400 tokens, so a cut-off write of literal content is completed from the request.
 
 After the fixes, on the course endpoint: offline 505/505, `test_live.py` 99/99, the held-out CSV
-conversations 5/5 x3, and the adversarial summary and CSV cases (SM, CV, CX) 75/75. PG-W stays a
-model-capability miss (see Known limitations).
+conversations 5/5 x3, and the adversarial summary and CSV cases (SM, CV, CX) 75/75. PG-W is still an open
+miss (see Known limitations).
+
+### Graded result of the submission (hw1-3)
+
+13/14 points: CP1 35/35, CP2 10/10, CP3 22/24 (debugging 12/12, programming 10/12). The two lost requirements
+were agent bugs, and the same report showed that 13 of 20 graded programming runs ended without a compiling
+`tally.py`:
+
+| Graded finding | Cause | Change |
+|---|---|---|
+| Requirement 9: `"1,234.50"` and `"$1,000"` counted as invalid | The sample data has no such amounts, so no check saw them; the checklist dropped each requirement's continuation lines | The checklist keeps the full text. The first message lists the task's example amounts. Rows holding them must give the same results as the same amounts written plainly |
+| Requirement 11: a missing file exited 1, not 2 | The prompt's skeleton hardcoded status 1, and the probe accepted any non-zero status | The skeleton leaves status and message to the task. The harness reads the status and message the task names and compares them for a missing file and an unknown command |
+| `.replace("\", "")` arrived as `"\"`, then the same failed edit repeated | JSON escaping lost a backslash; `edit_file` needed an exact match; refusals did not steer towards a rewrite | The literal is repaired when that makes the file compile, `edit_file` tolerates doubled or halved backslashes, and repeated failed edits on a non-compiling file trigger one full rewrite |
+
+`tests/test_cp3_mock.py` (`t_report_*`) and `tests/unit/test_cp3_report_fixes.py` cover these offline. `PG-R` runs
+them live with the report's exact commands; its requirement wording is reconstructed from the report.
 
 ### `bash tests/story_all.sh` (one story through all three checkpoints)
 
@@ -489,9 +536,11 @@ grader simulation exit: 0
 
 ## Known limitations
 
-- **Model limits on CP3 programming.** Qwen3-14B without thinking sometimes leaves a requirement unimplemented
-  or misreads one, and its own tests rarely cover the edge cases a requirement names. The harness's checks,
-  self-review, best-version restore and broken-edit restore recover most cases. Still observed:
+- **CP3 programming misses.** Qwen3-14B without thinking sometimes leaves a requirement unimplemented or
+  misreads one, and its own tests rarely cover the edge cases a requirement names. The harness's checks,
+  self-review, best-version restore and broken-edit restore recover most cases. These misses were recorded as
+  model limits, but the graded report traced two similar ones to the agent, so their causes are not settled.
+  Still observed:
   - `count --invalid` (variant D);
   - `$`/`+` amounts and date filters (variant E);
   - `monthly --json` (variant F);

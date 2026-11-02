@@ -32,6 +32,8 @@ def debug(id, tag, attack, seed, names=("gateway", "orders", "inventory", "payme
 
 prog("PG-O", "O", "grader-like", "The official prompt word for word (7-12 hidden); 40k rows with quoted commas, "
      "negatives, mixed-case categories, a category with '&' and a forced top-N tie. Graded on 1-6.")
+prog("PG-R", "R", "grader-like", "Requirements 9 and 11 as the hw1-3 grading report quotes them, with its exact "
+     "commands: formatted amounts the sample data never shows, and a different exit status per error.")
 prog("PG-D", "D", "grader-like", "Hidden-style 7-12 the agent was never tuned on: --json on every command (object "
      "shapes), count --invalid, monthly, stats with exit 1, usage errors with exit 2, exact half-up rounding of "
      "3-decimal amounts. Data has CRLF, a repeated header, a blank line and 200 invalid rows.")

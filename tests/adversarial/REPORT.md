@@ -83,7 +83,7 @@ All 147 cases were run live on the final code. 141 fully pass (CV-B01 passed on 
   - DB-1 to DB-4 and DB-B02 score 12/12 on both runs.
   - DB-B01 scores 10/12 (root cause now right; two extraction slips).
   - DB-B03 scores 10/12 (payment keys; one run hit an endpoint failure).
-- **CP3 programming:** PG-O 6/6, PG-D 10/12, PG-F 10/12, PG-E 1/12. The remaining misses are model-capability limits.
+- **CP3 programming:** PG-O 6/6, PG-D 10/12, PG-F 10/12, PG-E 1/12. The causes of the remaining misses were not all established.
 
 ## How the cases were run
 
