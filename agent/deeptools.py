@@ -422,6 +422,12 @@ class DeepTools:
             if hit is not None:
                 old, new = hit
                 n = 1
+        if n == 0 and "\\" in old:
+            # Tool-call JSON escaping: 'old' can arrive with doubled (or halved) backslashes. `new` stays as sent.
+            for variant in (old.replace("\\\\", "\\"), old.replace("\\", "\\\\")):
+                if variant != old and text.count(variant) == 1:
+                    old, n = variant, 1
+                    break
         if n == 0 and new and new in text:
             raise AgentError("'old' text not found in %s - but the file already contains your 'new' text: this "
                              "edit was ALREADY APPLIED. Do not repeat it; move on to the next problem." % rel)

@@ -2,6 +2,8 @@
 for the adversarial suite (TEST ONLY).
 
 O: the official prompt word for word (7-12 hidden); only 1-6 are graded.
+R: the official 1-6 plus requirements 9 and 11 as far as the hw1-3 grading report quotes them (the wording is
+reconstructed from the report; the real task text is not in this repository); 1-6, 9 and 11 are graded.
 D, E: the official 1-6 plus invented hidden-style requirements 7-12 that differ
 from the submission's own development variants (A/B/C).
 """
@@ -68,6 +70,14 @@ Grading: each of the 12 requirements is checked by a hidden test and is worth 1 
 
 HIDDEN = {
     "O": "7–12. *(hidden)*\n",
+    "R": """7–8. *(hidden)*
+9. **formatted amounts** — an amount may contain thousands separators and a leading dollar sign,
+   e.g. `"1,234.50"` and `"$1,000"`.
+10. *(hidden)*
+11. **errors** — an unknown command prints `error: unknown command: NAME` to stderr and exits with status 1;
+    a missing file prints `error: file not found: PATH` to stderr and exits with status 2.
+12. *(hidden)*
+""",
     "D": """7. **`--json`** — with `--json`, every command prints exactly one JSON object on one line instead of its normal
    output: `count` → `{"count": N}`; `total` → `{"total": "X.XX"}`, or `{"category": "name", "total": "X.XX"}` when
    `--category` is given (category in lowercase); `top` → `{"top": [{"category": "name", "amount": "X.XX"}, ...]}`;
@@ -233,7 +243,7 @@ def grade(variant, ws):
     out = []
     if not os.path.exists(os.path.join(ws, "tally.py")):
         return [(r, "tally.py exists", False, "missing") for r in range(1, 13 if variant != "O" else 7)]
-    sem = {"O": "D", "D": "D", "E": "E", "F": "F"}[variant]
+    sem = {"O": "D", "R": "D", "D": "D", "E": "E", "F": "F"}[variant]
     tmp = tempfile.mkdtemp(prefix="adv_pg_")
     small = {}
     for k, v in SMALL.items():
@@ -276,6 +286,18 @@ def grade(variant, ws):
     check(6, "range single day", ["range", "--from", d1, "--to", d1])
     check(6, "range options reversed", ["range", "--to", d2, "--from", d1])
     check(6, "option before argument", ["total", "--file", small["case"], "--category", "food"])
+    if variant == "R":
+        fmt = os.path.join(tmp, "fmt.csv")
+        with open(fmt, "w", newline="") as f:
+            f.write('date,description,category,amount\n2024-01-01,a,Rent,"1,234.50"\n2024-01-02,b,Rent,$12.00\n'
+                    '2024-01-03,c,Rent,"$1,000"\n')
+        for req, name, args, want in (
+                (9, "formatted amounts", ["total", "--file", fmt], (0, "2246.50\n", "")),
+                (11, "missing file", ["count", "--file", "nope/missing.csv"],
+                 (2, "", "error: file not found: nope/missing.csv\n")),
+                (11, "unknown command", ["frobnicate"], (1, "", "error: unknown command: frobnicate\n"))):
+            got = run_tally(ws, args)
+            out.append((req, name, got == want, "args=%s want=%r got=%r" % (args, want, got)))
     if variant == "D":
         check(7, "count --json", ["count", "--json"], True)
         check(7, "total --json", ["--json", "total"][::-1], True)

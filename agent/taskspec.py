@@ -150,13 +150,19 @@ def signatures(prompt):
 
 
 def checklist(prompt):
-    """Numbered/bulleted requirement lines, for the pinned requirements list."""
-    items = []
+    """Numbered/bulleted requirements with their indented continuation lines folded in (examples
+    are often on the second line), for the pinned requirements list."""
+    items, open_item = [], False
     for line in prompt.splitlines():
         s = line.strip()
         if re.match(r"^(\d{1,2}[.)]|[*-])\s+\S", s) and len(s) > 6:
-            items.append(s[:300])
-    return items[:40]
+            items.append(s)
+            open_item = True
+        elif open_item and s and line.startswith((" ", "\t")):
+            items[-1] += " " + s
+        else:
+            open_item = False
+    return [i[:600] for i in items[:40]]
 
 
 def dumps_report(obj):
@@ -186,5 +192,85 @@ def requirement_items(prompt, limit=14):
     for n, body in items:
         if re.search(r"\(hidden\)", body, re.I):
             continue
-        out.append("%s. %s" % (n, body if len(body) <= 420 else body[:417] + "..."))
+        out.append("%s. %s" % (n, body if len(body) <= 600 else body[:597] + "..."))
     return out[:limit]
+
+
+# ------------------------------------------------- rules the sample data never shows
+def _sentences(prompt):
+    """Task text as sentences, one list item or paragraph at a time, with wrapped lines joined."""
+    blocks = re.split(r"\n\s*\n|\n(?=\s*(?:\d{1,2}[.)]|[*-])\s)", prompt or "")
+    out = []
+    for block in blocks:
+        text = re.sub(r"\s*\n\s*", " ", block).replace("e.g.", "e\0g\0").replace("i.e.", "i\0e\0")
+        out += [s.replace("\0", ".") for s in re.split(r"(?<=[.!?])\s+(?=[A-Z`*\"$])", text) if s.strip()]
+    return out
+
+
+_ERROR_KINDS = (
+    ("missing_file", re.compile(r"file not found|no such file|(?:missing|nonexistent|non-existent|unreadable) "
+                                r"(?:\w+ )?file|(?:file|path)\b[^.;]{0,40}?(?:is missing|does(?: not|n't) exist|"
+                                r"not exist|cannot be (?:opened|read|found))", re.I)),
+    ("unknown_command", re.compile(r"(?:unknown|unrecogni[sz]ed|invalid) (?:sub)?command", re.I)),
+)
+_EXIT = re.compile(r"\bexit(?:s|ing)?(?:\s+(?:with|code|status|value|of|the|a|an))*\s*`?(\d{1,3})\b|"
+                   r"\b(?:status|code)\s*(?:of\s+|is\s+|=\s*)?`?(\d{1,3})\b", re.I)
+
+
+def _exit_status(text):
+    m = _EXIT.search(text)
+    return int(m.group(1) or m.group(2)) if m else None
+
+
+def error_contracts(prompt):
+    """{'missing_file'|'unknown_command': {'status': int|None, 'message': str|None}}: the exit status and
+    error message the task names for these errors. Only what the task states is returned."""
+    found = {}
+    for sentence in _sentences(prompt):
+        hits = sorted((m.start(), kind) for kind, rx in _ERROR_KINDS for m in rx.finditer(sentence))
+        starts = [h for i, h in enumerate(hits) if i == 0 or hits[i - 1][1] != h[1]]
+        for i, (pos, kind) in enumerate(starts):
+            end = starts[i + 1][0] if i + 1 < len(starts) else len(sentence)
+            part = sentence[pos:end]
+            status = _exit_status(part)
+            if status is None and i == 0:
+                status = _exit_status(sentence[:pos])     # "exit with status 2 if the file is missing"
+            message = next((t for t in re.findall(r"`([^`]+)`", part) if re.search(r"error|not found|unknown", t, re.I)),
+                           None)
+            have = found.setdefault(kind, {"status": None, "message": None})
+            have["status"] = status if have["status"] is None else have["status"]
+            have["message"] = message or have["message"]
+    return found
+
+
+def error_message_for(template, value):
+    """(text, exact): the message `template` gives for `value`. Without a placeholder only the part
+    before the template's last ': ' is reliable, so exact is False and that prefix is returned."""
+    text, n = re.subn(r"<[^>]+>|\{[^}]+\}|\b(?:PATH|FILE|FILENAME|NAME|COMMAND|CMD)\b", lambda m: value, template)
+    return (text, True) if n else (template.rsplit(": ", 1)[0], False)
+
+
+_FORMATTED = re.compile(r"[-+(]?\$?\d{1,3}(?:,\d{3})+(?:\.\d+)?\)?|[-+(]?\$\d+(?:\.\d+)?\)?|\+\d+(?:\.\d+)?")
+_AMOUNT_WORDS = re.compile(r"\b(amounts?|prices?|costs?|money|dollars?|thousands)\b", re.I)
+_NOT_ACCEPTED = re.compile(r"\b(invalid|reject(?:ed|s)?|malformed|skip(?:ped|s)?|print(?:ed|s)?|output|not (?:valid|allowed|"
+                           r"accepted))\b", re.I)
+
+
+def input_value_examples(prompt):
+    """Formatted amounts ($, thousands separators, a plus sign) the task says the input may hold."""
+    out = []
+    for sentence in _sentences(prompt):
+        if not _AMOUNT_WORDS.search(sentence) or _NOT_ACCEPTED.search(re.sub(r"not invalid", "", sentence, flags=re.I)):
+            continue
+        for tok in re.findall(r"`([^`]+)`|\"([^\"\s]+)\"", sentence):
+            value = (tok[0] or tok[1]).strip().strip('"\'')
+            if _FORMATTED.fullmatch(value) and value not in out:
+                out.append(value)
+    return out
+
+
+def plain_amount(value):
+    """`"$1,234.50"` -> 1234.50, `(5.00)` -> -5.00."""
+    negative = value.startswith(("-", "("))
+    digits = re.sub(r"[^\d.]", "", value)
+    return ("-" if negative else "") + digits

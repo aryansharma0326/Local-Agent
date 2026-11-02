@@ -16,12 +16,15 @@ The harness, not the model, decides success:
 Wrap-up starts when time or model calls run low; it needs no model call.
 """
 
+import csv
 import json
 import os
 import re
+import shlex
 import shutil
 import tempfile
 import time
+from datetime import date
 
 import config
 import profiling
@@ -36,7 +39,19 @@ from workspace import ChangeAudit
 
 WRAP_SECONDS = 45.0
 WRITE_TOOLS = ("write_file", "append_file", "edit_file")
+_LONE_BACKSLASH = re.compile(r"""(?<![\\\w])(["'])\\\1(?=\s*[,)\]:])""")
 _DROPPED = "(older steps were removed"
+
+
+def _dates_ok(row):
+    """False if a YYYY-MM-DD field of the row is not a real date."""
+    for cell in row:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cell.strip()):
+            try:
+                date.fromisoformat(cell.strip())
+            except ValueError:
+                return False
+    return True
 
 
 class DeepAgent:
@@ -153,12 +168,31 @@ class DeepAgent:
         amap = self._arg_map()
         if amap:
             cmds = amap + "\n" + cmds
+        rules = self._task_rules()
+        if rules:
+            cmds = rules + "\n" + cmds
         return prompts.FIRST_PROGRAMMING.format(
             prompt=self.prompt, deliverables=", ".join(self.deliverables), scratch=self.scratch,
             checklist="\n".join("  " + c for c in taskspec.checklist(self.prompt)) or "  (see task)",
             listing=self._listing(),
             data=("DATA PROFILE (computed by the harness):\n" + "\n\n".join(data) + "\n") if data else "",
             commands=("\n".join(code) + "\n\n" if code else "") + cmds)
+
+    def _task_rules(self):
+        """Error contracts and input formats named by the task, which the sample data never exercises."""
+        lines = []
+        for kind, label in (("missing_file", "missing file"), ("unknown_command", "unknown command")):
+            rule = taskspec.error_contracts(self.prompt).get(kind)
+            if rule and rule["status"] is not None:
+                lines.append("  %s: exit status %d%s" % (label, rule["status"], (", stderr `%s`" % rule["message"])
+                                                         if rule["message"] else ""))
+        examples = taskspec.input_value_examples(self.prompt)
+        if examples:
+            lines.append("  amounts the parser must accept: %s (the same value as %s)" % (
+                ", ".join("`%s`" % e for e in examples), ", ".join(taskspec.plain_amount(e) for e in examples)))
+        if not lines:
+            return ""
+        return "RULES FROM THE TASK THE DATA FILE DOES NOT SHOW (the harness tests them):\n" + "\n".join(lines) + "\n"
 
     def _all_examples(self):
         """Example invocations written in the task plus command signatures whose
@@ -302,8 +336,75 @@ class DeepAgent:
         if re.search(r"--file\b", self.prompt) and self.smoke_cmds:
             base = self.smoke_cmds[0].split()
             if len(base) >= 3:
-                out.append(" ".join(base[:3] + ["--file", "no_such_file.csv"]))
+                out.insert(0, " ".join(base[:3] + ["--file", "no_such_file.csv"]))
         return out[:8]
+
+    def _contract_problem(self, kind, cmd, value, code, errout):
+        """What differs from the exit status and message the task names for this error, or None."""
+        rule = taskspec.error_contracts(self.prompt).get(kind)
+        if not rule:
+            return None
+        if rule["status"] is not None and code != rule["status"]:
+            return ("`%s` exited with status %s, but the task names status %d for this error; change the exit "
+                    "status in that branch" % (cmd, code, rule["status"]))
+        if rule["message"]:
+            want, exact = taskspec.error_message_for(rule["message"], value)
+            got = errout.strip()
+            if not (got == want if exact else got.startswith(want)):
+                return "`%s` printed %r on stderr, but the task names %r for this error" % (cmd, got[:160], want)
+        return None
+
+    def _unknown_command_check(self):
+        rule = taskspec.error_contracts(self.prompt).get("unknown_command")
+        if not rule or not self.primary or not self.primary.endswith(".py") or \
+                config.remaining() < WRAP_SECONDS + 10:
+            return []
+        c = "python3 %s zzz-no-such-command" % self.primary
+        code, _, errout, _, timed_out = run_process(c, self.root, 20, self.tools.env)
+        problem = None if timed_out else self._contract_problem("unknown_command", c, "zzz-no-such-command", code, errout)
+        return [problem] if problem else []
+
+    def _input_examples_check(self):
+        """The task's own example amounts (e.g. `"1,234.50"`, `$1,000`), which the sample data may never
+        show: rows holding them must give the same results as the same rows with the amounts written plainly."""
+        examples = taskspec.input_value_examples(self.prompt)
+        default = self._default_data_file()
+        if not examples or not default or not default.endswith(".csv") or "--file" not in self.prompt or \
+                config.remaining() < WRAP_SECONDS + 20:
+            return []
+        try:
+            with open(os.path.join(self.root, default), "r", encoding="utf-8-sig", errors="replace", newline="") as f:
+                reader = csv.reader(f)
+                header = next(reader)
+                rows = [r for _, r in zip(range(300), reader)]
+        except (OSError, StopIteration, csv.Error):
+            return []
+        col = next((i for i, h in enumerate(header) if re.search(r"amount|price|cost|total|value", h, re.I)), None)
+        base = next((r for r in rows if col is not None and len(r) == len(header) and all(c.strip() for c in r)
+                     and re.fullmatch(r"-?\d+(\.\d+)?", r[col].strip()) and _dates_ok(r)), None)
+        if base is None:
+            return []
+
+        def fixture(name, values):
+            path = os.path.join(self.scratch, name)
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(header)
+                for v in values:
+                    w.writerow(base[:col] + [v] + base[col + 1:])
+            return path
+        plain = fixture("examples_plain.csv", [taskspec.plain_amount(e) for e in examples])
+        fancy = fixture("examples_task.csv", examples)
+        for c in [c for c in self.smoke_cmds if "--file" not in c][:6]:
+            a = run_process("%s --file %s" % (c, shlex.quote(plain)), self.root, 20, self.tools.env)
+            b = run_process("%s --file %s" % (c, shlex.quote(fancy)), self.root, 20, self.tools.env)
+            if a[:3] != b[:3]:
+                return ["amounts written as in the task (%s) are treated differently from the same amounts written "
+                        "plainly: `%s` on rows with them printed %r (exit %s, stderr %r), but on the plain copy %r "
+                        "(exit %s). Accept the formats the task describes in the amount parser" % (
+                            ", ".join("`%s`" % e for e in examples), c, b[1].strip()[:80], b[0], b[2].strip()[:120],
+                            a[1].strip()[:80], a[0])]
+        return []
 
     def _equals_form_check(self, outputs):
         """One command: `--file=PATH` must behave like `--file PATH` (the --name=value form)."""
@@ -538,12 +639,16 @@ class DeepAgent:
                 flags.append("`%s` (a file that does not exist) exited with status %s%s; a missing file must exit "
                              "with a non-zero status and an error message on stderr" % (
                                  c, code, "" if errout.strip() else " and printed nothing on stderr"))
+            elif "no_such_file" in c and self._contract_problem("missing_file", c, "no_such_file.csv", code, errout):
+                flags.append(self._contract_problem("missing_file", c, "no_such_file.csv", code, errout))
             else:
                 if "no_such_file" in c:
                     passed.add(c)
                 lines.append("$ %s   (edge probe)\n  exit=%s stdout: %s%s" % (
                     c, code, out.strip()[:120] or "(empty)", ("  stderr: " + errout.strip()[:160]) if errout.strip() else ""))
         flags += self._equals_form_check(outputs)
+        flags += self._unknown_command_check()
+        flags += self._input_examples_check()
         lines += self._format_hints(outputs)
         self.last_pass = passed
         # an option that does not change the output was probably ignored
@@ -658,6 +763,7 @@ class DeepAgent:
     def _after_write(self, rel):
         if self.kind != "programming" or rel != self.primary:
             return ""
+        repaired = self._repair_backslash_literals(rel)
         score, text = self._smoke()
         try:
             with open(os.path.join(self.root, rel), "r", encoding="utf-8", errors="replace", newline="") as f:
@@ -695,8 +801,46 @@ class DeepAgent:
                        "else. Re-read the CURRENT file from the top (how arguments/options are parsed and looked up, "
                        "how rows are loaded) and fix the real cause; or run a small experiment with run_python.")
         revert += self._review_regression(rel) or self._broken_edit_guard(rel)
-        return ("\n\nHARNESS CHECK of %s (version %d):\n%s\nCompare every output above with the requirements "
-                "(exact format, values consistent with the data profile).%s" % (rel, len(self.versions), text, revert))
+        return ("%s\n\nHARNESS CHECK of %s (version %d):\n%s\nCompare every output above with the requirements "
+                "(exact format, values consistent with the data profile).%s" % (
+                    repaired, rel, len(self.versions), text, revert))
+
+    def _repair_backslash_literals(self, rel):
+        """A one-backslash string literal is lost in tool-call JSON escaping (`"\\"` arrives as `"\"`) and leaves
+        an unterminated string that edits rarely fix: complete it here when that makes the file compile."""
+        if not rel.endswith(".py"):
+            return ""
+        full = os.path.join(self.root, rel)
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace", newline="") as f:
+                src = f.read()
+        except OSError:
+            return ""
+        text, fixed = src, []
+        for _ in range(10):
+            try:
+                compile(text, rel, "exec")
+                break
+            except SyntaxError as e:
+                if not e.lineno or "string" not in str(e.msg):
+                    return ""
+                lines = text.split("\n")
+                new, n = _LONE_BACKSLASH.subn(lambda m: m.group(1) + "\\\\" + m.group(1), lines[e.lineno - 1])
+                if not n:
+                    return ""
+                lines[e.lineno - 1] = new
+                text = "\n".join(lines)
+                fixed.append(e.lineno)
+            except (ValueError, TypeError):
+                return ""
+        else:
+            return ""
+        if not fixed:
+            return ""
+        self.tools.sb.create_file(rel, text)
+        log("repaired one-backslash string literal(s) on line(s) %s" % fixed)
+        return ("\n(harness) Line(s) %s held a one-backslash string that JSON escaping had broken; the harness "
+                "wrote it as a valid literal. Do not edit it again." % ", ".join(map(str, fixed)))
 
     def _restore_best(self):
         if not self.versions or not self.primary:
@@ -928,12 +1072,21 @@ class DeepAgent:
         if 4 <= self.sigs[sig] < 8 and config.remaining() > WRAP_SECONDS + 60:
             # Repeating an identical call cannot help: refuse it (cheap) and steer, rather than ending the run.
             unset = [k for k in self.report.order if k not in self.report.set_keys] if self.report is not None else []
+            if self.kind == "programming":
+                if name == "edit_file":
+                    self._edit_failed()
+                return ("ERROR: identical call #%d refused - its result cannot change. Change approach: copy 'old' "
+                        "exactly from the CURRENT file in PINNED STATE, or rewrite the whole file with write_file."
+                        % self.sigs[sig])
             return ("ERROR: identical call #%d refused - its result cannot change. Do something different: another "
                     "pattern or file, read_lines around a hit you already have, or set the keys you have confirmed%s."
                     % (self.sigs[sig], (" (still unset: %s)" % ", ".join(unset)) if unset else ""))
         result = self.tools.call(name, args)
         if name == "edit_file" and self.kind == "programming":
-            self.failed_edits = getattr(self, "failed_edits", 0) + 1 if result.startswith("ERROR") else 0
+            if result.startswith("ERROR"):
+                self._edit_failed()
+            else:
+                self.failed_edits = 0
             if self.failed_edits == 3:
                 result += ("\n(harness) Three edits in a row failed to apply. You may now rewrite the WHOLE program "
                            "once with write_file (complete file, fixing the open problems).")
@@ -1041,6 +1194,17 @@ class DeepAgent:
                     "file shown in PINNED STATE." % name)
         hist.append(now)
         return ""
+
+    def _edit_failed(self):
+        """Edits that keep failing on a program that does not compile cannot finish the task: clear the
+        steps and ask for one complete rewrite while there is still time for it."""
+        self.failed_edits = getattr(self, "failed_edits", 0) + 1
+        err = self._compile_error(self.primary) if self.primary else None
+        if err and self.failed_edits >= 5 and getattr(self, "restarts", 0) < 2 and config.remaining() > 110:
+            self.restarts = getattr(self, "restarts", 0) + 1
+            self.restart_pending = [err]
+            self.failed_edits = 0
+            log("edits keep failing on a program that does not compile: scheduling a fresh rewrite")
 
     def can_rewrite(self, rel):
         """Rewrite cap: after the first full write, the deliverable changes by edit_file only - unless it

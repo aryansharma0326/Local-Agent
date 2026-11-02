@@ -542,6 +542,76 @@ def t_probe_case_variants_quiet_on_correct_program():
        + [tc("finish", message="Done.")] * 5)
     expect("letter case must not change the result" not in _observations(), "false case-sensitivity flag")
 
+# ------------------------------------------------------------ hw1-3 grading report
+REPORT_REQS = """
+9. **formatted amounts** - an amount may contain thousands separators and a leading dollar sign,
+   e.g. `"1,234.50"` and `"$1,000"`.
+11. **errors** - an unknown command prints `error: unknown command: NAME` to stderr and exits with
+    status 1; a missing file prints `error: file not found: PATH` to stderr and exits with status 2.
+"""
+
+
+def report_tally(strip, status):
+    """The two lines the report quotes, inside a small working program."""
+    return (
+        'import csv, sys\nfrom decimal import Decimal, InvalidOperation\n\n'
+        'def parse_amount(s):\n    try:\n        return Decimal(s.strip().replace("$", "")%s)\n'
+        '    except InvalidOperation:\n        return None\n\n'
+        'def load(path):\n    try:\n        f = open(path, newline="", encoding="utf-8-sig")\n'
+        '    except OSError:\n'
+        '        sys.stderr.write("error: file not found: %%s\\n" %% path); sys.exit(%d)\n'
+        '    with f:\n        rows = list(csv.reader(f))[1:]\n'
+        '    return [a for a in (parse_amount(r[3]) for r in rows if len(r) == 4) if a is not None]\n\n'
+        'args = sys.argv[1:]\n'
+        'if not args or args[0] not in ("count", "total"):\n'
+        '    sys.stderr.write("error: unknown command: %%s\\n" %% (args[0] if args else "")); sys.exit(1)\n'
+        'path = args[args.index("--file") + 1] if "--file" in args else "transactions.csv"\n'
+        'amounts = load(path)\nprint(len(amounts) if args[0] == "count" else "%%.2f" %% sum(amounts))\n'
+    ) % (strip, status)
+
+
+def t_report_status_and_formatted_amounts_are_flagged():
+    # Req 9 and 11: the checks said "No problems detected" for both bugs.
+    ws, prompt = prog_ws()
+    go(ws, prompt + REPORT_REQS, [tc("write_file", path="tally.py", content=report_tally("", 1))]
+       + [tc("finish", message="done")] * 3)
+    obs = _observations()
+    expect("the task names status 2" in obs, "wrong missing-file status not flagged")
+    expect("treated differently from the same amounts" in obs, "formatted amounts not flagged")
+    first = SERVER.requests[0]["body"]["messages"][1]["content"]
+    expect("missing file: exit status 2" in first and "`$1,000`" in first, "task rules missing from the first message")
+
+
+def t_report_correct_program_gets_no_flags():
+    ws, prompt = prog_ws()
+    go(ws, prompt + REPORT_REQS, [tc("write_file", path="tally.py", content=report_tally('.replace(",", "")', 2))]
+       + [tc("finish", message="done")] * 3)
+    obs = _observations()
+    expect("but the task names" not in obs and "treated differently from" not in obs, "false flag on a correct program")
+
+
+def t_report_lone_backslash_literal_is_repaired():
+    # 13 of 20 graded runs ended without a compiling tally.py after this exact line.
+    ws, prompt = prog_ws()
+    go(ws, prompt + REPORT_REQS, [tc("write_file", path="tally.py",
+                                     content=report_tally('.replace("\\", "")', 2))]
+       + [tc("finish", message="done")] * 3)
+    expect("COMPILE FAILED" not in _observations(), "broken literal reached the smoke check")
+    expect("one-backslash" in _observations(), "repair not reported")
+    expect('.replace("\\\\", "")' in ws.read("tally.py"), repr(ws.read("tally.py")[:200]))
+
+
+def t_report_failed_edits_on_broken_program_lead_to_rewrite():
+    # The same failing edit, repeated, used to run until the agent stopped for repeated actions.
+    ws, prompt = prog_ws()
+    bad = tc("edit_file", path="tally.py", old="no such text", new="x")
+    r = go(ws, prompt, [tc("write_file", path="tally.py", content="def main(:\n    pass\n")] + [bad] * 5
+           + [tc("write_file", path="tally.py", content=REF)] + [tc("finish", message="done")] * 3)
+    expect(any("FRESH START" in str(q["body"]["messages"]) for q in SERVER.requests), "no fresh rewrite was requested")
+    expect(ws.read("tally.py") == REF, "rewrite did not land")
+    expect(r.status == "success", r.stdout)
+
+
 if __name__ == "__main__":
     runner = Runner()
     names = [n for n in sorted(globals()) if n.startswith("t_")]
